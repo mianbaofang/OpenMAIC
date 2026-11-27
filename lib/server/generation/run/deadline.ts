@@ -16,8 +16,14 @@ export const STEP_DEADLINES_MS = {
   /** The outline, its own stream retries included. */
   outline: 300_000,
   agentProfiles: 120_000,
-  /** Per attempt. */
-  sceneContent: 300_000,
+  /**
+   * Per attempt. Local patch: raised 300s -> 900s. Interactive-scene widget
+   * generation through the opencode Go gateway (this deployment's chat
+   * provider) takes 3-6 minutes per scene; at 300s those steps time out,
+   * retry and re-timeout, so courseware stalls "generating" forever. 900s
+   * matches the 15-minute LLM transport budget in lib/ai/providers.ts.
+   */
+  sceneContent: 900_000,
   /** Per attempt. */
   sceneActions: 60_000,
   /** Per clip attempt (POST /api/generate/tts). */

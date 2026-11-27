@@ -1,4 +1,7 @@
-# syntax=docker/dockerfile:1
+# Upstream declares "# syntax=docker/dockerfile:1", which makes buildkit pull
+# that frontend image from Docker Hub. This host has no route to
+# auth.docker.io, so the build hangs. The built-in frontend parses the
+# --mount=type=cache below identically.
 
 # ---- Stage 1: Base ----
 FROM node:22-alpine AS base
