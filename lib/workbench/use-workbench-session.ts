@@ -191,6 +191,10 @@ export function useWorkbenchStream(sessionId: string | null): void {
     const source = new FetchEventSource(
       `/api/agent/sessions/${encodeURIComponent(sessionId)}/events?lastEventId=${from}`,
     );
+    let lastStreamProgressAt = Date.now();
+    const noteStreamProgress = () => {
+      lastStreamProgressAt = Date.now();
+    };
 
     let connected = false;
     let caughtUp = false;
@@ -203,6 +207,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
     };
     const onAny = (e: MessageEvent) => {
       if (!isCurrent()) return;
+      noteStreamProgress();
       let parsed: WorkbenchEvent;
       try {
         parsed = JSON.parse(e.data) as WorkbenchEvent;
@@ -306,6 +311,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
     };
     const onCaughtUp = () => {
       if (!isCurrent()) return;
+      noteStreamProgress();
       finishReplay();
       markAttached();
     };
@@ -320,7 +326,12 @@ export function useWorkbenchStream(sessionId: string | null): void {
       window.clearTimeout(replayWatchdog);
       if (!caughtUp) replayWatchdog = window.setTimeout(finishReplay, REPLAY_WATCHDOG_MS);
     };
-    source.addEventListener('open', armReplayWatchdog);
+    const onOpen = () => {
+      noteStreamProgress();
+      armReplayWatchdog();
+    };
+    source.addEventListener('open', onOpen);
+    source.addEventListener('activity', noteStreamProgress);
     const replayBackstop = window.setTimeout(finishReplay, REPLAY_BACKSTOP_MS);
 
     for (const type of WORKBENCH_EVENT_TYPES) source.addEventListener(type, onAny as EventListener);
@@ -341,7 +352,8 @@ export function useWorkbenchStream(sessionId: string | null): void {
     // SSE is the latency path, not the only correctness path. A browser tab can
     // be suspended or an intermediary can freeze an open stream without ever
     // firing onerror; poll the cheap detail endpoint while the fold says the run
-    // is live so a missed session_end cannot leave "排队中" on screen forever.
+    // is live, reconcile a missed session_end, and force a silent OPEN stream to
+    // replay from the applied cursor.
     let statusPollTimer: number | undefined;
     let statusPollInFlight = false;
     const scheduleStatusPoll = () => {
@@ -393,6 +405,17 @@ export function useWorkbenchStream(sessionId: string | null): void {
           });
           return;
         }
+        // A connection can stay OPEN while an intermediary silently stops
+        // delivering frames. Force a replay from the id the fold actually
+        // applied; otherwise the thought chain can remain empty indefinitely.
+        if (
+          (meta.status === 'queued' || meta.status === 'running') &&
+          source.readyState === FetchEventSource.OPEN &&
+          Date.now() - lastStreamProgressAt >= SESSION_STATUS_POLL_MS
+        ) {
+          source.reconnect(String(latest.lastEventId));
+          noteStreamProgress();
+        }
       } catch {
         // The next tick retries; the event stream remains the primary path.
       } finally {
@@ -423,7 +446,8 @@ export function useWorkbenchStream(sessionId: string | null): void {
       window.clearTimeout(replayWatchdog);
       window.clearTimeout(replayBackstop);
       window.clearTimeout(statusPollTimer);
-      source.removeEventListener('open', armReplayWatchdog);
+      source.removeEventListener('open', onOpen);
+      source.removeEventListener('activity', noteStreamProgress);
       for (const type of WORKBENCH_EVENT_TYPES)
         source.removeEventListener(type, onAny as EventListener);
       source.removeEventListener('caught_up', onCaughtUp);

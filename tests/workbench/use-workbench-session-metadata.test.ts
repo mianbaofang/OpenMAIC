@@ -9,13 +9,30 @@ import { useWorkbenchStream } from '@/lib/workbench/use-workbench-session';
 
 class FakeEventSource {
   static readonly CLOSED = 2;
+  static instances: FakeEventSource[] = [];
   readonly readyState = 1;
+  readonly reconnect = vi.fn();
   onerror: ((event: Event) => void) | null = null;
+  private readonly listeners = new Map<string, Set<(event: Event) => void>>();
 
-  constructor(readonly url: string) {}
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
 
-  addEventListener(): void {}
-  removeEventListener(): void {}
+  addEventListener(type: string, listener: (event: Event) => void): void {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type: string, listener: (event: Event) => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  emitActivity(): void {
+    for (const listener of this.listeners.get('activity') ?? []) listener(new Event('activity'));
+  }
+
   close(): void {}
 }
 
@@ -57,6 +74,7 @@ describe('session detail bootstrap attachment lifetime', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+    FakeEventSource.instances = [];
     vi.stubGlobal('EventSource', FakeEventSource);
   });
 
@@ -306,6 +324,71 @@ describe('session detail bootstrap attachment lifetime', () => {
         .getState()
         .chat.some((node) => node.kind === 'system' && node.detail === 'stale terminal status'),
     ).toBe(false);
+  });
+
+  it('forces a silent open stream to replay from the applied cursor', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'running',
+          stageId: 'stage-a',
+          updatedAt: 100,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'running',
+          updatedAt: 101,
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.instances[0]!.reconnect).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
+
+    expect(FakeEventSource.instances[0]!.reconnect).toHaveBeenCalledWith('0');
+  });
+
+  it('does not force reconnect while heartbeat activity keeps the stream alive', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'running',
+          stageId: 'stage-a',
+          updatedAt: 100,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'running',
+          updatedAt: 101,
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+    act(() => FakeEventSource.instances[0]!.emitActivity());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(FakeEventSource.instances[0]!.reconnect).not.toHaveBeenCalled();
   });
 
   it('reconciles a terminal status when the event stream stays silent', async () => {

@@ -12,7 +12,7 @@ import type { ResolvedModel } from '@/lib/server/resolve-model';
 import { ContextBudgetError } from '@/lib/agent/runtime/context-budget-error';
 
 export const AGENT_DRIVER_STAGE = 'maic-agent-driver' as const;
-export const UNKNOWN_MODEL_RESERVED_OUTPUT_TOKENS = 8_192;
+export const UNKNOWN_MODEL_RESERVED_OUTPUT_TOKENS = 32_768;
 // The agent slot owns the model choice. This adapter only enforces its transport
 // contract: no thinking effort of its own and an OpenAI-compatible pi api/dialect. The actual HTTP transport is selected by
 // lib/ai/providers.ts.
@@ -46,7 +46,7 @@ export function buildPiDriverModel(
     // reachable before the gateway rejects an oversized prompt.
     contextWindow: routeContextWindow ?? connection.modelInfo?.contextWindow ?? 128_000,
     // Pi requires Model.maxTokens. For known models this is the real catalog
-    // output window. For unknown models 8192 is only a deterministic internal
+    // output window. For unknown models 32768 is a deterministic internal
     // compaction reservation; resolveAgentDriverModel exposes it on the wire
     // only for Anthropic transports that otherwise impose a hidden 4096 cap.
     // Teaching reserves this space when preparing input too, and sends an

@@ -186,6 +186,18 @@ export class FetchEventSource extends EventTarget {
     this.stopConnection();
   }
 
+  /**
+   * Replace a connection that is still nominally open but has gone silent.
+   * The caller supplies the last id it actually applied, so replayed backlog
+   * cannot be skipped by frames this connection received but the page lost.
+   */
+  reconnect(lastEventId?: string): void {
+    if (this.readyState === FetchEventSource.CLOSED) return;
+    if (lastEventId !== undefined) this.lastEventId = lastEventId;
+    this.stopConnection();
+    this.scheduleReconnect();
+  }
+
   private stopConnection(): void {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
@@ -280,6 +292,9 @@ export class FetchEventSource extends EventTarget {
       for (;;) {
         const { value, done } = await reader.read();
         if (done || controller.signal.aborted) break;
+        // Heartbeats and partial frames count as transport activity even though
+        // the SSE parser intentionally emits no product event for them.
+        this.dispatchEvent(new Event('activity'));
         parser.feed(decoder.decode(value, { stream: true }));
         this.lastEventId = parser.lastEventId;
         if (performance.now() - busySince > MAX_BUSY_MS) {

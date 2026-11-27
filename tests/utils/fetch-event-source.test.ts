@@ -199,6 +199,16 @@ describe('FetchEventSource', () => {
     source.close();
   });
 
+  it('reports heartbeat bytes as activity without emitting a product frame', async () => {
+    const source = new FetchEventSource('/s');
+    const seen = record(source, 'activity', 'message');
+    await settle();
+    connections[0]!.send(': ping\n\n');
+    await settle();
+    expect(seen.map(({ type }) => type)).toEqual(['activity']);
+    source.close();
+  });
+
   it('moves through the ready states and exposes the constants', async () => {
     const source = new FetchEventSource('/s');
     expect([source.CONNECTING, source.OPEN, source.CLOSED]).toEqual([0, 1, 2]);
@@ -325,6 +335,23 @@ describe('FetchEventSource', () => {
     expect(seen).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    source.close();
+  });
+
+  it('forced reconnect aborts the silent stream and resumes from the supplied applied id', async () => {
+    const source = new FetchEventSource('/s');
+    await settle();
+    connections[0]!.send('id: 9\ndata: received but not applied\n\n');
+    await settle();
+
+    source.reconnect('4');
+    expect(connections[0]!.init.signal!.aborted).toBe(true);
+    expect(source.readyState).toBe(0);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sentHeaders(1)['last-event-id']).toBe('4');
+    expect(source.readyState).toBe(1);
     source.close();
   });
 

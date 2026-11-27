@@ -194,18 +194,18 @@ describe('agent driver model', () => {
     // The old 1_050_000 fallback made pi's compaction threshold unreachable;
     // the calibrated fallback is a conservative real window.
     expect(resolved.piModel.contextWindow).toBe(128_000);
-    expect(resolved.piModel.maxTokens).toBe(8_192);
+    expect(resolved.piModel.maxTokens).toBe(32_768);
     expect(resolved.wireMaxOutputTokens).toBeUndefined();
-    expect(resolved.reservedOutputTokens).toBe(8_192);
+    expect(resolved.reservedOutputTokens).toBe(32_768);
   });
 
   it('sends the conservative reservation for an unknown Anthropic model', async () => {
     mocks.modelInfo = null;
     const resolved = await (await configure('minimax:MiniMax-M3.1-Flash'))();
     expect(resolved.piModel.provider).toBe('minimax');
-    expect(resolved.reservedOutputTokens).toBe(8_192);
+    expect(resolved.reservedOutputTokens).toBe(32_768);
     // Omitting max_tokens makes the Anthropic SDK silently use 4096.
-    expect(resolved.wireMaxOutputTokens).toBe(8_192);
+    expect(resolved.wireMaxOutputTokens).toBe(32_768);
   });
 
   it('omits the unknown-model output limit even when compaction supplies its reservation', async () => {
@@ -326,8 +326,8 @@ describe('agent driver model', () => {
         fallback: 'minimax:MiniMax-M3.1-Flash',
       })
     )();
-    expect(resolved.wireMaxOutputTokens).toBe(8_192);
-    expect(resolved.teaching.wireMaxOutputTokens).toBe(8_192);
+    expect(resolved.wireMaxOutputTokens).toBe(16_384);
+    expect(resolved.teaching.wireMaxOutputTokens).toBe(16_384);
   });
 
   it('keeps a known Anthropic primary wire limit when the fallback metadata is unknown', async () => {
@@ -346,13 +346,13 @@ describe('agent driver model', () => {
       name: 'unknown OpenAI primary with an unknown Anthropic fallback',
       model: 'openai:some-model',
       fallback: 'minimax:MiniMax-M3.1-Flash',
-      expectedWireOutput: 8_192,
+      expectedWireOutput: 32_768,
     },
     {
       name: 'unknown Anthropic primary with an unknown OpenAI fallback',
       model: 'minimax:MiniMax-M3.1-Flash',
       fallback: 'openai:some-model',
-      expectedWireOutput: 8_192,
+      expectedWireOutput: 32_768,
     },
   ])(
     'shares an Anthropic-safe teaching budget for an $name',
@@ -360,7 +360,7 @@ describe('agent driver model', () => {
       mocks.modelInfo = null;
       const resolved = await (await configure({ model, fallback }))();
       expect(resolved.wireMaxOutputTokens).toBe(expectedWireOutput);
-      expect(resolved.teaching.wireMaxOutputTokens).toBe(8_192);
+      expect(resolved.teaching.wireMaxOutputTokens).toBe(expectedWireOutput);
     },
   );
 
@@ -368,7 +368,7 @@ describe('agent driver model', () => {
     {
       name: 'an unknown Anthropic fallback',
       fallback: 'minimax:MiniMax-M3.1-Flash',
-      expectedOutput: 8_192,
+      expectedOutput: 32_768,
     },
     {
       name: 'a known Anthropic fallback',
