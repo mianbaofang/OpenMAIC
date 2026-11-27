@@ -10,7 +10,7 @@ import { useWorkbenchStream } from '@/lib/workbench/use-workbench-session';
 class FakeEventSource {
   static readonly CLOSED = 2;
   static instances: FakeEventSource[] = [];
-  readonly readyState = 1;
+  readyState = 1;
   readonly reconnect = vi.fn();
   onerror: ((event: Event) => void) | null = null;
   private readonly listeners = new Map<string, Set<(event: Event) => void>>();
@@ -356,6 +356,40 @@ describe('session detail bootstrap attachment lifetime', () => {
     });
 
     expect(FakeEventSource.instances[0]!.reconnect).toHaveBeenCalledWith('0');
+  });
+
+  it('reconciles running status while the event stream is still connecting', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'queued',
+          stageId: 'stage-a',
+          updatedAt: 100,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'running',
+          updatedAt: 101,
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    expect(useWorkbenchStore.getState().status).toBe('queued');
+    FakeEventSource.instances[0]!.readyState = 0;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
+
+    expect(useWorkbenchStore.getState().status).toBe('running');
+    expect(useWorkbenchStore.getState().generationOpen).toBe(true);
+    expect(FakeEventSource.instances[0]!.reconnect).not.toHaveBeenCalled();
   });
 
   it('does not force reconnect while heartbeat activity keeps the stream alive', async () => {

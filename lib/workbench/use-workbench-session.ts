@@ -142,6 +142,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
   const finishReplayState = useWorkbenchStore((s) => s.finishReplay);
   const setError = useWorkbenchStore((s) => s.setError);
   const reconcileSessionStatus = useWorkbenchStore((s) => s.reconcileSessionStatus);
+  const reconcileLiveSessionStatus = useWorkbenchStore((s) => s.reconcileLiveSessionStatus);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -405,6 +406,12 @@ export function useWorkbenchStream(sessionId: string | null): void {
           });
           return;
         }
+        if (meta.status === 'queued' || meta.status === 'running') {
+          reconcileLiveSessionStatus({
+            status: meta.status,
+            updatedAt: typeof meta.updatedAt === 'number' ? meta.updatedAt : Date.now(),
+          });
+        }
         // A connection can stay OPEN while an intermediary silently stops
         // delivering frames. Force a replay from the id the fold actually
         // applied; otherwise the thought chain can remain empty indefinitely.
@@ -463,6 +470,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
     finishReplayState,
     setError,
     reconcileSessionStatus,
+    reconcileLiveSessionStatus,
   ]);
 }
 

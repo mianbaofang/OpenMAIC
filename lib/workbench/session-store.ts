@@ -561,6 +561,11 @@ export interface WorkbenchState extends WorkbenchSessionState {
     error?: string;
     updatedAt: number;
   }) => void;
+  /** Reconcile queued/running REST status when no lifecycle frame has arrived. */
+  reconcileLiveSessionStatus: (input: {
+    status: Extract<SessionStatus, 'queued' | 'running'>;
+    updatedAt: number;
+  }) => void;
 }
 
 /**
@@ -1987,6 +1992,37 @@ export function reconcileTerminalSessionStatus(
   return next;
 }
 
+/**
+ * REST backstop for the window before the runner's first lifecycle frame reaches
+ * the browser. A stalled SSE attach can otherwise leave the header saying
+ * "queued" even though the worker has already claimed the session. This changes
+ * only live presentation state; the durable event log remains authoritative for
+ * the transcript and can still replay normally when the stream recovers.
+ */
+export function reconcileLiveSessionStatus(
+  state: WorkbenchFold,
+  input: {
+    readonly status: Extract<SessionStatus, 'queued' | 'running'>;
+    readonly updatedAt: number;
+  },
+): WorkbenchFold {
+  if (state.status !== 'connecting' && state.status !== 'queued' && state.status !== 'running') {
+    return state;
+  }
+  // A late queued snapshot must not undo a newer running observation.
+  if (input.status === 'queued' && state.status === 'running') return state;
+  if (state.status === input.status) return state;
+  const next: WorkbenchFold = { ...state, status: input.status };
+  if (input.status === 'running') {
+    next.generationOpen = true;
+    openWaiting(next, `meta-live:${input.updatedAt}`, input.updatedAt);
+  } else {
+    closeWaiting(next);
+    next.generationOpen = false;
+  }
+  return next;
+}
+
 const REPLAY_STREAMING = new Set(['message_update', 'trace']);
 
 /**
@@ -2143,6 +2179,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
     set((state) => foldEvents(state, events));
   },
   reconcileSessionStatus: (input) => set((state) => reconcileTerminalSessionStatus(state, input)),
+  reconcileLiveSessionStatus: (input) => set((state) => reconcileLiveSessionStatus(state, input)),
 }));
 
 // ── Control-plane client ─────────────────────────────────────────────────────
