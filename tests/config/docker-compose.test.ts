@@ -92,6 +92,11 @@ describe('docker-compose.yml', () => {
     expect(JSON.stringify(app.build?.args)).not.toContain('NEXT_PUBLIC_PERSISTENCE');
   });
 
+  it('exposes the manual editor and AI workbench by default in this fork', () => {
+    expect(defaultOf(app.build?.args, 'NEXT_PUBLIC_MAIC_EDITOR_ENABLED')).toBe('true');
+    expect(defaultOf(app.build?.args, 'NEXT_PUBLIC_WORKBENCH_ENABLED')).toBe('true');
+  });
+
   it('passes its default DATABASE_URL through boot validation', async () => {
     const { requireDatabaseUrl } = await import('@/lib/server/database-requirement');
     expect(() => requireDatabaseUrl(readEnvFile('docker-compose.defaults.env'))).not.toThrow();

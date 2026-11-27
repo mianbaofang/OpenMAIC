@@ -9,10 +9,9 @@ services:
         # follow each feature's documented default; explicit build-time overrides
         # can be supplied on the command line.
         # env_file below does not feed build args.
-        # Fork default: expose the classroom editor so generated courses can be
-        # revised without rebuilding a second time. Set this flag to false to
-        # restore the upstream default for this deployment. The AI workbench
-        # stays opt-in because it additionally needs a tool-calling agent route.
+        # Fork default: expose the classroom editor and AI workbench so generated
+        # courses can be revised manually or through the configured agent route.
+        # Set either flag to false to restore the upstream default.
         - ALLOWED_FRAME_ANCESTORS=${ALLOWED_FRAME_ANCESTORS:-}
         - NEXT_PUBLIC_MAIC_EDITOR_ENABLED=${NEXT_PUBLIC_MAIC_EDITOR_ENABLED:-true}
         - NEXT_PUBLIC_MAIC_EDITOR_RENDERER_ENABLED=${NEXT_PUBLIC_MAIC_EDITOR_RENDERER_ENABLED:-}
@@ -23,7 +22,7 @@ services:
         - NEXT_PUBLIC_ENABLE_VIDEO_EXPORT=${NEXT_PUBLIC_ENABLE_VIDEO_EXPORT:-}
         - NEXT_PUBLIC_VIDEO_EXPORT_CTA_DESTINATION=${NEXT_PUBLIC_VIDEO_EXPORT_CTA_DESTINATION:-}
         - NEXT_PUBLIC_ENABLE_PPTX_IMPORT=${NEXT_PUBLIC_ENABLE_PPTX_IMPORT:-}
-        - NEXT_PUBLIC_WORKBENCH_ENABLED=${NEXT_PUBLIC_WORKBENCH_ENABLED:-}
+        - NEXT_PUBLIC_WORKBENCH_ENABLED=${NEXT_PUBLIC_WORKBENCH_ENABLED:-true}
         # Previous name of NEXT_PUBLIC_WORKBENCH_ENABLED, still read for one release.
         - NEXT_PUBLIC_PRO_WORKBENCH_ENABLED=${NEXT_PUBLIC_PRO_WORKBENCH_ENABLED:-}
     # Published on loopback by default: the single-user owner (see
