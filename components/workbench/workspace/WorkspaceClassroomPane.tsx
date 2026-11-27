@@ -23,7 +23,15 @@
  * course, at either size, is a perfectly legitimate thing to do with one.
  */
 
-import { ArrowLeft, CircleHelp, Eye, Maximize, MessagesSquare, Minimize2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  CircleHelp,
+  Eye,
+  Maximize,
+  MessagesSquare,
+  Minimize2,
+  ScanSearch,
+} from 'lucide-react';
 import { memo, useEffect, useLayoutEffect, useState } from 'react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { useMobileLayout } from '@/lib/adaptive/adaptive-provider';
@@ -65,6 +73,7 @@ export const WorkspaceClassroomPane = memo(function WorkspaceClassroomPane({
   onCollapse,
   onMobileExit,
   onTalkAboutCourse,
+  onReviewLayout,
 }: {
   /**
    * The tab strip's state and callbacks. The pane owns no tab state: the
@@ -121,6 +130,8 @@ export const WorkspaceClassroomPane = memo(function WorkspaceClassroomPane({
    * one about it ("Edit with AI"). Absent otherwise.
    */
   readonly onTalkAboutCourse?: () => void;
+  /** Open a course-bound draft with the built-in layout review brief. */
+  readonly onReviewLayout?: () => void;
 }) {
   const courseId = browser.activeCourseId;
   const { t } = useI18n();
@@ -327,6 +338,18 @@ export const WorkspaceClassroomPane = memo(function WorkspaceClassroomPane({
             >
               <MessagesSquare className="size-4" aria-hidden="true" />
               <span>{t('workspace.talkAboutCourse')}</span>
+            </button>
+          ) : null}
+          {onReviewLayout ? (
+            <button
+              type="button"
+              data-testid="workspace-review-layout"
+              onClick={onReviewLayout}
+              title={t('workspace.reviewLayoutHint')}
+              className="ws-head-chat"
+            >
+              <ScanSearch className="size-4" aria-hidden="true" />
+              <span>{t('workspace.reviewLayout')}</span>
             </button>
           ) : null}
           {/* Export, as in the full-screen header: the download menu must not

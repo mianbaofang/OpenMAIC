@@ -44,9 +44,12 @@ describe('the empty conversation names its course', () => {
       join(process.cwd(), 'components/workbench/WorkbenchChat.tsx'),
       'utf8',
     );
-    expect(chat).toContain(
-      '}, [seedCourse?.stageId, seedCourse?.title, composerOwnerId, newConversation]);',
-    );
+    expect(chat).toContain('seedCourse?.stageId');
+    expect(chat).toContain('seedCourse?.title');
+    expect(chat).toContain('seedCourse?.prompt');
+    expect(chat).toContain('composerOwnerId');
+    expect(chat).toContain('newConversation');
+    expect(chat).toContain("inlineMentions.add(seedCourse.prompt ?? '', 0, 0, {");
   });
 
   describe('a title-only rewrite leaves focus where it is', () => {

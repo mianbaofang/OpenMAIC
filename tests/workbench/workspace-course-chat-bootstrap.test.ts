@@ -332,6 +332,13 @@ const talkAboutCourse = async () => {
   await act(async () => talk!());
 };
 
+/** The classroom header's built-in AI layout review brief. */
+const reviewLayout = async () => {
+  const review = mocks.classroomProps?.onReviewLayout as (() => void) | undefined;
+  expect(review, 'a browsed course offers an AI layout review').toBeTypeOf('function');
+  await act(async () => review!());
+};
+
 /** The draft-conversation capability the shell hands its chat pane, if any. */
 const draft = () =>
   mocks.chatPaneProps?.draftConversation as {
@@ -344,6 +351,7 @@ const draft = () =>
       boundCourseId?: string;
     }) => Promise<unknown>;
     course?: { stageId: string; title: string };
+    prompt?: string;
   } | null;
 
 beforeEach(() => {
@@ -487,6 +495,7 @@ describe('a course opened without a conversation', () => {
     expect(container?.querySelector('[data-testid="chat-pane"]')).toBeNull();
     expect(mocks.classroomProps?.hidden).toBe(false);
     expect(mocks.classroomProps?.onTalkAboutCourse).toBeTypeOf('function');
+    expect(mocks.classroomProps?.onReviewLayout).toBeTypeOf('function');
     expect(mocks.startFirstMessage).not.toHaveBeenCalled();
     // A view state of this open: the remembered fold is not written.
     expect(localStorage.getItem(CHAT_COLLAPSED_STORAGE_KEY)).toBeNull();
@@ -506,8 +515,25 @@ describe('a course opened without a conversation', () => {
       ownerKey: 'draft:stage-1',
       course: { stageId: 'stage-1', title: 'stage-1 name' },
     });
-    // Once the conversation is there, the header's offer goes away.
+    // Once the conversation is there, the header's offers go away.
     expect(mocks.classroomProps?.onTalkAboutCourse).toBeUndefined();
+    expect(mocks.classroomProps?.onReviewLayout).toBeUndefined();
+    expect(mocks.startFirstMessage).not.toHaveBeenCalled();
+  });
+
+  it('prefills a course-bound layout review brief without starting a run', async () => {
+    mocks.sessionRows = [{ id: 'session-recent', stageId: 'stage-2', updatedAt: 9 }];
+    await render();
+
+    await reviewLayout();
+
+    expect(container?.querySelector('[data-testid="chat-pane"]')).not.toBeNull();
+    expect(draft()).toMatchObject({
+      ownerKey: 'draft:stage-1',
+      course: { stageId: 'stage-1', title: 'stage-1 name' },
+      prompt: 'workspace.reviewLayoutPrompt',
+    });
+    expect(mocks.classroomProps?.onReviewLayout).toBeUndefined();
     expect(mocks.startFirstMessage).not.toHaveBeenCalled();
   });
 
@@ -519,6 +545,7 @@ describe('a course opened without a conversation', () => {
     await render();
     expect(mocks.classroomProps?.readOnly).toBe(true);
     expect(mocks.classroomProps?.onTalkAboutCourse).toBeUndefined();
+    expect(mocks.classroomProps?.onReviewLayout).toBeUndefined();
   });
 
   it('creates the session from the first message, then attaches it', async () => {

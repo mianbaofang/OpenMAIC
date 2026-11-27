@@ -294,6 +294,8 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
    * it is an ordinary new conversation. New chat names nothing.
    */
   const [draftNamesCourse, setDraftNamesCourse] = useState(false);
+  /** Optional prefilled text for the empty conversation beside that course. */
+  const [draftPrompt, setDraftPrompt] = useState<string | null>(null);
   /**
    * "Chat with this material" from the knowledge base: the material on its
    * way to the one composer it names. Any navigation the teacher makes after
@@ -307,6 +309,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     const dropMaterialSeed = () => {
       setMaterialSeed(null);
       setNewConversationRequested(false);
+      setDraftPrompt(null);
     };
     window.addEventListener('popstate', dropMaterialSeed);
     return () => window.removeEventListener('popstate', dropMaterialSeed);
@@ -653,6 +656,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       persistCourseTabs(next);
       collapse.expandClassroom();
       setMaterialSeed(null);
+      setDraftPrompt(null);
       goTo(withView(withCourse(panes, next.activeCourseId), null));
     },
     [collapse, courseTabs, goTo, panes, persistCourseTabs],
@@ -676,6 +680,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       setMaterialSeed(null);
       setNewConversationRequested(startConversation);
       setDraftNamesCourse(startConversation);
+      setDraftPrompt(null);
       if (startConversation) {
         draftVisit.current += 1;
         collapse.expandChat();
@@ -716,6 +721,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       setNarrowFocus('chat');
       collapse.expandChat();
       setMaterialSeed(null);
+      setDraftPrompt(null);
       goTo(withView(withSession(panes, sessionId), null));
     },
     [collapse, goTo, panes],
@@ -784,6 +790,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       const next = activateCourseTab(courseTabs, courseId);
       if (next === courseTabs) return;
       setMaterialSeed(null);
+      setDraftPrompt(null);
       setCourseTabs(next);
       persistCourseTabs(next);
       goTo(withCourse(panes, next.activeCourseId));
@@ -798,6 +805,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       if (next === current) return;
       courseTabsRef.current = next;
       setCourseTabs(next);
+      setDraftPrompt(null);
       persistCourseTabs(next);
       // Also the end of a course deletion (`handleCourseDeleted`), which the
       // teacher may have left the classroom for while it was confirmed.
@@ -1059,6 +1067,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     persistCourseTabs(NO_COURSE_TABS);
     setNewConversationRequested(false);
     setMaterialSeed(null);
+    setDraftPrompt(null);
     setComposerReset((value) => value + 1);
   };
 
@@ -1126,6 +1135,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     draftVisit.current += 1;
     setNewConversationRequested(true);
     setDraftNamesCourse(false);
+    setDraftPrompt(null);
     setNarrowFocus('chat');
     collapse.expandChat();
     setMaterialSeed(null);
@@ -1176,6 +1186,17 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     talkAboutCourseRef.current = talkAboutCourse;
   });
   const [talkAboutCourseStable] = useState(() => () => talkAboutCourseRef.current());
+  /** Open the same course-bound draft with a ready-to-edit layout review brief. */
+  const reviewCourseLayout = () => {
+    startNewConversation();
+    setDraftNamesCourse(true);
+    setDraftPrompt(t('workspace.reviewLayoutPrompt'));
+  };
+  const reviewCourseLayoutRef = useRef(reviewCourseLayout);
+  useLayoutEffect(() => {
+    reviewCourseLayoutRef.current = reviewCourseLayout;
+  });
+  const [reviewCourseLayoutStable] = useState(() => () => reviewCourseLayoutRef.current());
   // Same for the phone classroom's exit: `goHome` is rebuilt every render, and a
   // fresh identity would rerender the memoised pane and its panel context.
   const goHomeRef = useRef(goHome);
@@ -1561,6 +1582,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       draftCourseId
         ? {
             ownerKey: `draft:${draftCourseId}`,
+            ...(draftPrompt ? { prompt: draftPrompt } : {}),
             // Opened for this course: its composer names it (see
             // `draftNamesCourse`).
             ...(draftNamesCourse
@@ -1624,6 +1646,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       draftCourseId,
       draftLoadedName,
       draftNamesCourse,
+      draftPrompt,
       loadSessions,
       navigateInBackground,
       t,
@@ -2248,6 +2271,9 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
             onCollapse={bothPanesOnScreen ? collapse.collapseClassroom : undefined}
             onTalkAboutCourse={
               browsingCourse && !readOnlyCourse ? talkAboutCourseStable : undefined
+            }
+            onReviewLayout={
+              browsingCourse && !readOnlyCourse ? reviewCourseLayoutStable : undefined
             }
           />
         ) : null}

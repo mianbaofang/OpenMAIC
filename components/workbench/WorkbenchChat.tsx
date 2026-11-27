@@ -576,7 +576,11 @@ export function WorkbenchChat({
    * nothing but what was written here: once the user has typed, their mentions
    * are theirs.
    */
-  const seedCourse = sessionId ? null : (draftConversation?.course ?? null);
+  const seedCourse = sessionId
+    ? null
+    : draftConversation?.course
+      ? { ...draftConversation.course, prompt: draftConversation.prompt }
+      : null;
   const seededCourse = useRef<{ readonly stageId: string; readonly text: string } | null>(null);
   const seededAsk = useRef<SeedCourseAsk | null>(null);
   useEffect(() => {
@@ -618,7 +622,7 @@ export function WorkbenchChat({
     if (seeded) courses.remove(seeded.stageId);
     inlineMentions.reset();
     courses.add(ref);
-    const written = inlineMentions.add('', 0, 0, {
+    const written = inlineMentions.add(seedCourse.prompt ?? '', 0, 0, {
       kind: 'course',
       id: ref.stageId,
       name: ref.title,
@@ -642,7 +646,13 @@ export function WorkbenchChat({
     // Also when the course's title arrives late (a course outside the viewer's
     // list, named by its document once loaded): an untouched mention is rewritten.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seedCourse?.stageId, seedCourse?.title, composerOwnerId, newConversation]);
+  }, [
+    seedCourse?.stageId,
+    seedCourse?.title,
+    seedCourse?.prompt,
+    composerOwnerId,
+    newConversation,
+  ]);
   const refreshedCreateCalls = useRef(new Set<string>());
 
   // The durable completed tool node is the source of truth: replay and a live

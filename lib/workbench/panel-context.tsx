@@ -166,6 +166,8 @@ export interface WorkbenchDraftConversation {
    * to it (`boundCourseId`).
    */
   readonly course?: { readonly stageId: string; readonly title: string };
+  /** Optional text written into the empty composer beside the named course. */
+  readonly prompt?: string;
 }
 
 const WorkbenchDraftConversationContext = createContext<WorkbenchDraftConversation | null>(null);
