@@ -12,6 +12,14 @@ export interface AgentConfigPatch {
   role?: string;
   persona?: string;
   avatar?: string;
+  /**
+   * The agent's bound TTS voice, persisted with the roster.
+   *
+   * `providerId` stays an open string (the app owns the provider registry), so
+   * the patch is provider-neutral. `undefined` clears an existing binding, which
+   * hands the agent back to the workspace's global voice.
+   */
+  voiceConfig?: GeneratedAgentConfig['voiceConfig'];
 }
 
 export type AgentEditOperation =
@@ -126,6 +134,10 @@ function applyOperationToRoster(roster: AgentRoster, op: AgentEditOperation): Ag
         }
 
         Object.assign(agent, op.patch);
+
+        // The voice binding is copied, not shared: immer freezes what it stores,
+        // and the caller keeps a binding it may still hold on to.
+        if (op.patch.voiceConfig) agent.voiceConfig = { ...op.patch.voiceConfig };
 
         // Recompute priority when role changes.
         if (op.patch.role !== undefined) {

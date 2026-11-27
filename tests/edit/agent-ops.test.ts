@@ -145,3 +145,60 @@ describe('teacherCount', () => {
     expect(teacherCount(roster)).toBe(2);
   });
 });
+
+describe('AgentConfigPatch voice binding', () => {
+  const binding = { providerId: 'openai-tts', modelId: 'gpt-4o-mini-tts', voiceId: 'marin' };
+
+  it('persists a voice binding on update', () => {
+    const roster = applyAgentEditOperation([T('a')], {
+      type: 'agent.update',
+      id: 'a',
+      patch: { voiceConfig: binding },
+    });
+    expect(roster[0].voiceConfig).toEqual(binding);
+  });
+
+  it('round-trips a voice binding through undo and redo', () => {
+    let h: AgentRosterHistory = { past: [], present: [T('a')], future: [] };
+    h = applyAgentEditOperation(h, {
+      type: 'agent.update',
+      id: 'a',
+      patch: { voiceConfig: binding },
+    });
+    expect(h.present[0].voiceConfig).toEqual(binding);
+
+    h = undoAgentEditOperation(h);
+    expect(h.present[0].voiceConfig).toBeUndefined();
+
+    h = redoAgentEditOperation(h);
+    expect(h.present[0].voiceConfig).toEqual(binding);
+  });
+
+  it('replaces an existing binding', () => {
+    const roster = applyAgentEditOperation([{ ...T('a'), voiceConfig: binding }], {
+      type: 'agent.update',
+      id: 'a',
+      patch: { voiceConfig: { providerId: 'qwen-tts', voiceId: 'cherry' } },
+    });
+    expect(roster[0].voiceConfig).toEqual({ providerId: 'qwen-tts', voiceId: 'cherry' });
+  });
+
+  it('clears a binding when the patch carries undefined', () => {
+    const roster = applyAgentEditOperation([{ ...T('a'), voiceConfig: binding }], {
+      type: 'agent.update',
+      id: 'a',
+      patch: { voiceConfig: undefined },
+    });
+    expect(roster[0].voiceConfig).toBeUndefined();
+  });
+
+  it('does not share the patched binding object with the roster', () => {
+    const roster = applyAgentEditOperation([T('a')], {
+      type: 'agent.update',
+      id: 'a',
+      patch: { voiceConfig: binding },
+    });
+    expect(roster[0].voiceConfig).not.toBe(binding);
+    expect(roster[0].voiceConfig).toEqual(binding);
+  });
+});

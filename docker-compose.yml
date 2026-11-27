@@ -9,8 +9,12 @@ services:
         # follow each feature's documented default; explicit build-time overrides
         # can be supplied on the command line.
         # env_file below does not feed build args.
+        # Fork default: expose the classroom editor so generated courses can be
+        # revised without rebuilding a second time. Set this flag to false to
+        # restore the upstream default for this deployment. The AI workbench
+        # stays opt-in because it additionally needs a tool-calling agent route.
         - ALLOWED_FRAME_ANCESTORS=${ALLOWED_FRAME_ANCESTORS:-}
-        - NEXT_PUBLIC_MAIC_EDITOR_ENABLED=${NEXT_PUBLIC_MAIC_EDITOR_ENABLED:-}
+        - NEXT_PUBLIC_MAIC_EDITOR_ENABLED=${NEXT_PUBLIC_MAIC_EDITOR_ENABLED:-true}
         - NEXT_PUBLIC_MAIC_EDITOR_RENDERER_ENABLED=${NEXT_PUBLIC_MAIC_EDITOR_RENDERER_ENABLED:-}
         - NEXT_PUBLIC_MAIC_PLAYBACK_RENDERER_ENABLED=${NEXT_PUBLIC_MAIC_PLAYBACK_RENDERER_ENABLED:-}
         - NEXT_PUBLIC_PI_CHAT_ENABLED=${NEXT_PUBLIC_PI_CHAT_ENABLED:-}

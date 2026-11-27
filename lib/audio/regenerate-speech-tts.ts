@@ -8,6 +8,7 @@
 import { db } from '@/lib/device-storage/database';
 import { serverTTSAvailable } from '@/lib/audio/tts-selection';
 import { generateAndStoreTTS } from '@/lib/audio/narration-tts';
+import type { ResolvedVoice } from '@/lib/audio/voice-resolver';
 import { useStageStore } from '@/lib/store/stage';
 import { resolveAudioBlob } from '@/lib/media/resolve-audio-bytes';
 import { mayGenerateForStage } from '@/lib/classroom/generation-permission';
@@ -73,13 +74,16 @@ export async function audioObjectUrl(audioId: string): Promise<string | null> {
  *
  * The clip always gets a fresh allocation (see `generateAndStoreTTS`): another
  * document may hold the old id, and no browser can prove it does not. Returns
- * the id on success, or null when TTS isn't applicable.
+ * the id on success, or null when TTS isn't applicable. A batch caller can pin
+ * one resolved voice for the whole run so a mid-run roster edit cannot change
+ * the timbre between clips.
  */
 export async function regenerateSpeechAudio(
   sceneOrder: number,
   action: { id?: string; text?: string; audioId?: string },
   language?: string,
   signal?: AbortSignal,
+  voiceOverride?: ResolvedVoice,
 ): Promise<string | null> {
   if (!isManagedTtsActive()) return null;
   const text = action.text?.trim();
@@ -90,5 +94,16 @@ export async function regenerateSpeechAudio(
   // asset, so it is gated exactly like every other way generation starts. The
   // surfaces withhold the control too; refusing here keeps the two one rule.
   if (!mayGenerateForStage(stageId)) return null;
+  if (voiceOverride) {
+    return generateAndStoreTTS(
+      requestId,
+      text,
+      language,
+      signal,
+      undefined,
+      stageId,
+      voiceOverride,
+    );
+  }
   return generateAndStoreTTS(requestId, text, language, signal, undefined, stageId);
 }

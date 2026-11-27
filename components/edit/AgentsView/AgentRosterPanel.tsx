@@ -34,6 +34,9 @@ import { useStageStore } from '@/lib/store/stage';
 import type { GeneratedAgentConfig } from '@/lib/types/stage';
 import { useAgentRoster } from './useAgentRoster';
 import { AvatarPicker } from './AvatarPicker';
+import { AgentVoicePicker } from './AgentVoicePicker';
+import { CourseNarrationPanel } from './CourseNarrationPanel';
+import { pickNarratorAgentId } from '@/lib/edit/agent-voice-picker';
 
 const PERSONA_MAX = 2000;
 
@@ -221,12 +224,26 @@ function PersonaEditor({ agentId, value, onUpdate, registerDraft }: PersonaEdito
 interface TeacherCardProps {
   readonly agent: GeneratedAgentConfig;
   readonly open: boolean;
+  /**
+   * Whether this teacher is the one that narrates the course (the first teacher
+   * carrying a voice binding — see `pickNarratorAgentId`). Only that card
+   * carries the course voice: binding a voice to another teacher would not
+   * change the narration, so the control must not pretend otherwise.
+   */
+  readonly isNarrator: boolean;
   readonly onToggle: () => void;
   readonly onUpdate: (id: string, patch: Partial<GeneratedAgentConfig>) => void;
   readonly registerDraft: RegisterDraft;
 }
 
-function TeacherCard({ agent, open, onToggle, onUpdate, registerDraft }: TeacherCardProps) {
+function TeacherCard({
+  agent,
+  open,
+  isNarrator,
+  onToggle,
+  onUpdate,
+  registerDraft,
+}: TeacherCardProps) {
   const { t } = useI18n();
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const personaPreview = agent.persona?.slice(0, 40) || t('edit.roster.noPersona');
@@ -308,6 +325,16 @@ function TeacherCard({ agent, open, onToggle, onUpdate, registerDraft }: Teacher
             onUpdate={(id, persona) => onUpdate(id, { persona })}
             registerDraft={registerDraft}
           />
+
+          {isNarrator && (
+            <>
+              <AgentVoicePicker
+                value={agent.voiceConfig}
+                onChange={(voiceConfig) => onUpdate(agent.id, { voiceConfig })}
+              />
+              <CourseNarrationPanel voiceConfig={agent.voiceConfig} />
+            </>
+          )}
         </div>
       )}
     </div>
@@ -529,6 +556,8 @@ export function AgentRosterPanel({ flushRef, headerTrailing }: AgentRosterPanelP
 
   const teachers = roster.filter((a) => a.role === 'teacher');
   const classmates = roster.filter((a) => a.role !== 'teacher');
+  // The teacher that narrates the course — the only card that carries a voice.
+  const narratorId = pickNarratorAgentId(roster);
 
   const handleUpdate = useCallback(
     (id: string, patch: Partial<GeneratedAgentConfig>) => {
@@ -587,6 +616,7 @@ export function AgentRosterPanel({ flushRef, headerTrailing }: AgentRosterPanelP
             key={agent.id}
             agent={agent}
             open={selectedId === agent.id}
+            isNarrator={agent.id === narratorId}
             onToggle={() => handleToggle(agent.id)}
             onUpdate={handleUpdate}
             registerDraft={registerDraft}

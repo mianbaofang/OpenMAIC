@@ -125,6 +125,32 @@ describe('allocated speech audio identities', () => {
     );
   });
 
+  it('pins an explicit resolved voice for a batch regeneration', async () => {
+    mocks.stageState = { stage: { id: 'stage-1' }, scenes: [] };
+    mocks.generateAndStoreTTS.mockResolvedValueOnce('ast_fresh_audio');
+    const voice = { providerId: 'minimax-tts' as const, voiceId: 'female-yujie' };
+
+    await expect(
+      regenerateSpeechAudio(
+        3,
+        { id: 'speech-1', text: 'New narration' },
+        'English',
+        undefined,
+        voice,
+      ),
+    ).resolves.toBe('ast_fresh_audio');
+
+    expect(mocks.generateAndStoreTTS).toHaveBeenCalledWith(
+      'tts_request_s3_speech-1',
+      'New narration',
+      'English',
+      undefined,
+      undefined,
+      'stage-1',
+      voice,
+    );
+  });
+
   it('always forks to a fresh allocation, even for a clip only this line holds', async () => {
     // No browser can prove that no other document holds an id, so the old
     // bytes are never replaced in place: they keep serving any other holder.
