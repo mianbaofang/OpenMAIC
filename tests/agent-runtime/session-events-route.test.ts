@@ -69,7 +69,7 @@ async function readNonHeartbeatChunk(
 ): Promise<string> {
   for (;;) {
     const chunk = await readChunk(reader);
-    if (chunk !== ': ping\n\n') return chunk;
+    if (chunk !== 'event: activity\ndata: {}\n\n') return chunk;
   }
 }
 
@@ -274,7 +274,7 @@ describe('GET per-session events', () => {
     expect(vi.getTimerCount()).toBe(2);
 
     await vi.advanceTimersByTimeAsync(25_000);
-    expect(await readChunk(reader)).toBe(': ping\n\n');
+    expect(await readChunk(reader)).toBe('event: activity\ndata: {}\n\n');
 
     await reader.cancel();
     expect(vi.getTimerCount()).toBe(0);

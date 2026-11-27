@@ -275,7 +275,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       write(`: replaying from event ${lastEventId}\n\n`);
       heartbeatTimer = setInterval(() => {
         if (closed) return;
-        write(': ping\n\n');
+        // A named frame lets the browser distinguish transport activity from a
+        // silent OPEN stream. Comments are invisible to EventSource listeners.
+        write('event: activity\ndata: {}\n\n');
       }, HEARTBEAT_INTERVAL_MS);
       // Register before the initial read so a commit racing with backlog
       // exhaustion cannot fall into the 5s fallback window. The callback is

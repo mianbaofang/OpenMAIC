@@ -1351,6 +1351,50 @@ describe('context_compacted (the compaction divider)', () => {
     expect(thinkIdx).toBeGreaterThanOrEqual(0);
     expect(divIdx2).toBeLessThan(thinkIdx);
   });
+
+  it('keeps history, compaction and the terminal failure after a large replay', () => {
+    const events = [
+      ev('session_start', { prompt: 'review this course' }),
+      compacted({
+        summary: 'Earlier pages were reviewed.',
+        tokensBefore: 80_000,
+        tokensAfter: 8_000,
+      }),
+      ...Array.from({ length: 300 }, (_, index) =>
+        ev('message_update', {
+          message: assistantMessage([{ type: 'thinking', thinking: `review step ${index + 1}` }]),
+        }),
+      ),
+      ev('message_end', {
+        message: assistantMessage([
+          { type: 'thinking', thinking: 'review step 300' },
+          { type: 'text', text: 'I fixed the layout and am checking the result.' },
+        ]),
+      }),
+      ev('session_end', { status: 'failed', error: 'Too Many Requests' }),
+    ];
+
+    const replayed = compactReplayEvents(events);
+    expect(replayed.filter((event) => event.type === 'message_update')).toHaveLength(2);
+    const state = foldEvents(blankFold, replayed);
+
+    expect(state.status).toBe('failed');
+    expect(state.error).toBe('Too Many Requests');
+    expect(state.waitingKey).toBeNull();
+    expect(state.generationOpen).toBe(false);
+    expect(state.chat.map((node) => node.kind)).toEqual([
+      'user',
+      'compaction',
+      'thinking',
+      'assistant',
+      'system',
+    ]);
+    expect(state.chat.at(-1)).toMatchObject({
+      kind: 'system',
+      tone: 'error',
+      detail: 'Too Many Requests',
+    });
+  });
 });
 
 describe('unknown event types are silently ignored', () => {

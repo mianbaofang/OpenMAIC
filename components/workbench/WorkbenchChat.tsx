@@ -106,6 +106,7 @@ import { useDoubleEscapeStop } from './chat/composer-escape';
 import { useWorkbenchAutoscroll } from './chat/autoscroll';
 import { chatColumn, composerLayout, wbStyles as styles } from './chat/chat-styles';
 import { ChatTimeline } from './chat/chat-timeline';
+import { SystemNode } from './chat/system-node';
 import { queuedOpeningMessage } from '@/lib/workbench/queued-session';
 import { type SeedCourseAsk, seedIsTitleOnlyChange } from '@/lib/workbench/draft-course-title';
 import { pendingQuestion } from './chat/question-card-state';
@@ -193,6 +194,7 @@ export function WorkbenchChat({
   const chat = useWorkbenchStore((s) => s.chat);
   const replaying = useWorkbenchStore((s) => s.replaying);
   const status = useWorkbenchStore((s) => s.status);
+  const sessionError = useWorkbenchStore((s) => s.error);
   const plan = useWorkbenchStore((s) => s.plan);
   const panelOpen = useWorkbenchStore((s) => s.panelOpen);
   const effectivePanelOpen = hosted ? adjacentPanelOpen : panelOpen;
@@ -282,6 +284,25 @@ export function WorkbenchChat({
         : [...retainedTranscript.chat, openingMessage]
       : (retainedTranscript?.chat ?? liveChat);
   const displayedPlan = retainedTranscript?.plan ?? plan;
+  const errorDetail = sessionError?.trim() ?? '';
+  const showSessionError =
+    status === 'failed' &&
+    errorDetail.length > 0 &&
+    !chat.some(
+      (node) => node.kind === 'system' && node.tone === 'error' && node.detail === errorDetail,
+    );
+  const sessionErrorNode: ChatNode | null = showSessionError
+    ? {
+        key: 'session-error',
+        kind: 'system',
+        tone: 'error',
+        text: t('workbench.system.runFailed'),
+        copyKey: 'workbench.system.runFailed',
+        hint: t('workbench.system.retryHint'),
+        hintCopyKey: 'workbench.system.retryHint',
+        detail: errorDetail,
+      }
+    : null;
 
   const [draft, setDraft] = useState('');
   /**
@@ -1301,7 +1322,7 @@ export function WorkbenchChat({
         data-testid="workbench-chat-column"
       >
         <div className="relative min-h-0 flex-1">
-          {catchingUp && !retainedTranscript ? (
+          {catchingUp && !retainedTranscript && !sessionErrorNode ? (
             <div
               className={cn('flex h-full items-center justify-center', layout.scrollPadding)}
               data-testid="workbench-replay-loading"
@@ -1358,6 +1379,7 @@ export function WorkbenchChat({
                 ) : showEmptyState ? (
                   <WorkbenchChatEmptyState t={t} />
                 ) : null}
+                {sessionErrorNode ? <SystemNode node={sessionErrorNode} t={t} /> : null}
                 {queued && !catchingUp ? <QueuedNotice t={t} /> : null}
               </div>
             </div>

@@ -61,6 +61,7 @@ import {
   withLocalSceneOrder,
 } from '@/lib/workbench/stage-freshness';
 import { FetchEventSource } from '@/lib/utils/fetch-event-source';
+import { NativeEventSource } from '@/lib/utils/native-event-source';
 import { applyGenerateTtsResultToScenes } from '@/lib/workbench/tts-stage-sync';
 import { useQuestionAutoConfirm } from '@/lib/workbench/question-auto-confirm';
 import { sessionScopedKey } from '@/lib/workbench/request-scope';
@@ -119,12 +120,14 @@ export const WORKBENCH_EVENT_TYPES: readonly string[] = [
   ...PI_EVENT_TYPES,
 ];
 
-/** How long an open stream may take to send `caught_up`. */
-const REPLAY_WATCHDOG_MS = 20_000;
+/** How long an open stream may take to send `caught_up`; above the 25s heartbeat. */
+const REPLAY_WATCHDOG_MS = 55_000;
 /** How long the transcript may wait for a stream that has not opened at all. */
 const REPLAY_BACKSTOP_MS = 120_000;
 /** REST backstop while the attached run is live but its SSE frames stop arriving. */
 const SESSION_STATUS_POLL_MS = 8_000;
+/** Missed transport activity must exceed the 25s heartbeat before reconnecting. */
+const SESSION_STREAM_SILENCE_MS = 35_000;
 
 /**
  * Attach to a session's durable event stream.
@@ -178,6 +181,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
             // a GET that overtook an uncommitted PATCH must not replace it.
             ...(expectedTitleRevision === 0 ? { title: detailTitle, expectedTitleRevision } : {}),
             ...(status ? { status } : {}),
+            ...(typeof meta.error === 'string' ? { error: meta.error } : {}),
             ...(typeof meta.stageId === 'string' && meta.stageId ? { stageId: meta.stageId } : {}),
             ...(typeof meta.existingCourse === 'boolean'
               ? { existingCourse: meta.existingCourse }
@@ -189,7 +193,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
     // Read the resume point imperatively: subscribing to `lastEventId` would
     // re-run this effect on every event and reconnect in a loop.
     const from = useWorkbenchStore.getState().lastEventId;
-    const source = new FetchEventSource(
+    const source = new NativeEventSource(
       `/api/agent/sessions/${encodeURIComponent(sessionId)}/events?lastEventId=${from}`,
     );
     let lastStreamProgressAt = Date.now();
@@ -204,7 +208,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
       if (connected || !isCurrent()) return;
       connected = true;
       setAttached(true);
-      setError(null);
+      if (useWorkbenchStore.getState().status !== 'failed') setError(null);
     };
     const onAny = (e: MessageEvent) => {
       if (!isCurrent()) return;
@@ -278,6 +282,20 @@ export function useWorkbenchStream(sessionId: string | null): void {
     // a five-minute tool call would otherwise sit on "replaying" until the next
     // frame, and a re-attach to a finished session at its last event id would
     // receive nothing at all.
+    const flushReplayPrefix = () => {
+      if (backlog.length === 0) return;
+      const batch = compactReplayEvents(backlog);
+      applyEvents(batch);
+      // Replay the media_ready side effect too: a failed job never lands in
+      // the document, so without this fold a re-attached client would keep
+      // the placeholder's skeleton instead of the error state.
+      for (const event of batch) {
+        if (event.type !== LIFECYCLE.mediaReady) continue;
+        const frame = parseMediaReadyFrame(event.data);
+        if (frame) applyMediaReadyFrame(frame);
+      }
+      backlog.length = 0;
+    };
     const finishReplay = () => {
       if (caughtUp) return;
       caughtUp = true;
@@ -295,16 +313,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
       if (lastRunEvent?.type === 'agent_start') {
         useCourseTimeline.getState().beginAgentRun(Date.now());
       }
-      applyEvents(compactReplayEvents(backlog));
-      // Replay the media_ready side effect too: a failed job never lands in
-      // the document, so without this fold a re-attached client would keep
-      // the placeholder's skeleton instead of the error state.
-      for (const event of backlog) {
-        if (event.type !== LIFECYCLE.mediaReady) continue;
-        const frame = parseMediaReadyFrame(event.data);
-        if (frame) applyMediaReadyFrame(frame);
-      }
-      backlog.length = 0;
+      flushReplayPrefix();
       // Record which stage links were historical in the same state transition
       // that exposes the fold. Opening a chat must not replay its old classroom
       // navigation into the independent right pane.
@@ -317,36 +326,55 @@ export function useWorkbenchStream(sessionId: string | null): void {
       markAttached();
     };
     source.addEventListener('caught_up', onCaughtUp);
-    // A low-priority request can wait in the browser's queue for as long as other
-    // requests hold it there, so the wait for `caught_up` runs only while a
-    // connection is open and counts from its last sign of progress. Finishing early
-    // would let the late replay in as live frames: an old course link would open its
-    // tab. The backstop only ends the spinner on a stream that never gets through.
+    // A replay can be delayed by the browser's request scheduler or an
+    // intermediary. Never turn a silent stream into an empty "finished" chat:
+    // apply the prefix already received, then reconnect from that applied
+    // cursor. Until the server says `caught_up`, later frames remain history.
     let replayWatchdog: number | undefined;
+    let replayBackstop: number | undefined;
+    const recoverSilentReplay = () => {
+      if (caughtUp || !isCurrent()) return;
+      noteStreamProgress();
+      flushReplayPrefix();
+      source.reconnect(String(useWorkbenchStore.getState().lastEventId));
+      armReplayWatchdog();
+      armReplayBackstop();
+    };
     const armReplayWatchdog = () => {
       window.clearTimeout(replayWatchdog);
-      if (!caughtUp) replayWatchdog = window.setTimeout(finishReplay, REPLAY_WATCHDOG_MS);
+      if (!caughtUp) replayWatchdog = window.setTimeout(recoverSilentReplay, REPLAY_WATCHDOG_MS);
+    };
+    const armReplayBackstop = () => {
+      window.clearTimeout(replayBackstop);
+      if (!caughtUp) replayBackstop = window.setTimeout(recoverSilentReplay, REPLAY_BACKSTOP_MS);
     };
     const onOpen = () => {
       noteStreamProgress();
       armReplayWatchdog();
     };
+    const onActivity = () => {
+      noteStreamProgress();
+      armReplayWatchdog();
+    };
     source.addEventListener('open', onOpen);
-    source.addEventListener('activity', noteStreamProgress);
-    const replayBackstop = window.setTimeout(finishReplay, REPLAY_BACKSTOP_MS);
+    source.addEventListener('activity', onActivity);
+    armReplayBackstop();
 
     for (const type of WORKBENCH_EVENT_TYPES) source.addEventListener(type, onAny as EventListener);
     source.onerror = () => {
       if (!isCurrent()) return;
+      flushReplayPrefix();
       window.clearTimeout(replayWatchdog);
       // During native auto-reconnect the server snapshot is more current than
       // this frozen fold. The next received frame marks it attached again.
       connected = false;
       setAttached(false);
       // EventSource retries on its own; only surface a hard failure.
-      if (source.readyState === FetchEventSource.CLOSED) {
+      if (source.readyState === NativeEventSource.CLOSED) {
         finishReplay();
         setError('event stream closed');
+      } else {
+        armReplayWatchdog();
       }
     };
 
@@ -417,8 +445,8 @@ export function useWorkbenchStream(sessionId: string | null): void {
         // applied; otherwise the thought chain can remain empty indefinitely.
         if (
           (meta.status === 'queued' || meta.status === 'running') &&
-          source.readyState === FetchEventSource.OPEN &&
-          Date.now() - lastStreamProgressAt >= SESSION_STATUS_POLL_MS
+          source.readyState === NativeEventSource.OPEN &&
+          Date.now() - lastStreamProgressAt >= SESSION_STREAM_SILENCE_MS
         ) {
           source.reconnect(String(latest.lastEventId));
           noteStreamProgress();
@@ -454,7 +482,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
       window.clearTimeout(replayBackstop);
       window.clearTimeout(statusPollTimer);
       source.removeEventListener('open', onOpen);
-      source.removeEventListener('activity', noteStreamProgress);
+      source.removeEventListener('activity', onActivity);
       for (const type of WORKBENCH_EVENT_TYPES)
         source.removeEventListener(type, onAny as EventListener);
       source.removeEventListener('caught_up', onCaughtUp);

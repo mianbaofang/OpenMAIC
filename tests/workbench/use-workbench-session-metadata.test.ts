@@ -33,6 +33,12 @@ class FakeEventSource {
     for (const listener of this.listeners.get('activity') ?? []) listener(new Event('activity'));
   }
 
+  emit(type: string, data: unknown = {}): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(new MessageEvent(type, { data: JSON.stringify(data) }));
+    }
+  }
+
   close(): void {}
 }
 
@@ -339,7 +345,7 @@ describe('session detail bootstrap attachment lifetime', () => {
           updatedAt: 100,
         }),
       )
-      .mockResolvedValueOnce(
+      .mockResolvedValue(
         jsonResponse({
           status: 'running',
           updatedAt: 101,
@@ -352,7 +358,7 @@ describe('session detail bootstrap attachment lifetime', () => {
     expect(FakeEventSource.instances[0]!.reconnect).not.toHaveBeenCalled();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(8_000);
+      await vi.advanceTimersByTimeAsync(40_000);
     });
 
     expect(FakeEventSource.instances[0]!.reconnect).toHaveBeenCalledWith('0');
@@ -405,7 +411,7 @@ describe('session detail bootstrap attachment lifetime', () => {
           updatedAt: 100,
         }),
       )
-      .mockResolvedValueOnce(
+      .mockResolvedValue(
         jsonResponse({
           status: 'running',
           updatedAt: 101,
@@ -415,14 +421,127 @@ describe('session detail bootstrap attachment lifetime', () => {
 
     await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(7_000);
+      await vi.advanceTimersByTimeAsync(34_000);
     });
     act(() => FakeEventSource.instances[0]!.emitActivity());
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(8_000);
     });
 
     expect(FakeEventSource.instances[0]!.reconnect).not.toHaveBeenCalled();
+  });
+
+  it('reconnects a silent replay instead of finishing with an empty transcript', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'failed',
+          stageId: 'stage-a',
+          updatedAt: 100,
+          error: 'Too Many Requests',
+        }),
+      ),
+    );
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      status: 'failed',
+      error: 'Too Many Requests',
+      replaying: true,
+      chat: [],
+    });
+    act(() => FakeEventSource.instances[0]!.emit('open'));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(55_000);
+    });
+
+    expect(FakeEventSource.instances[0]!.reconnect).toHaveBeenCalledWith('0');
+    expect(useWorkbenchStore.getState().replaying).toBe(true);
+    expect(useWorkbenchStore.getState().chat).toEqual([]);
+    expect(useWorkbenchStore.getState().error).toBe('Too Many Requests');
+  });
+
+  it('re-arms the replay watchdog when heartbeat activity arrives', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'failed',
+          stageId: 'stage-a',
+          updatedAt: 100,
+          error: 'Too Many Requests',
+        }),
+      ),
+    );
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    act(() => FakeEventSource.instances[0]!.emit('open'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50_000);
+    });
+    act(() => FakeEventSource.instances[0]!.emitActivity());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(FakeEventSource.instances[0]!.reconnect).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000);
+    });
+    expect(FakeEventSource.instances[0]!.reconnect).toHaveBeenCalledWith('0');
+  });
+
+  it('applies a received replay prefix before reconnecting from its applied cursor', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'failed',
+          stageId: 'stage-a',
+          updatedAt: 100,
+          error: 'Too Many Requests',
+        }),
+      ),
+    );
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    act(() => FakeEventSource.instances[0]!.emit('open'));
+    act(() =>
+      FakeEventSource.instances[0]!.emit('user_message', {
+        id: 1,
+        ts: 101,
+        attempt: 0,
+        type: 'user_message',
+        data: { text: 'Please review this course' },
+      }),
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(55_000);
+    });
+
+    expect(FakeEventSource.instances[0]!.reconnect).toHaveBeenCalledWith('1');
+    expect(useWorkbenchStore.getState()).toMatchObject({ replaying: true, lastEventId: 1 });
+    expect(useWorkbenchStore.getState().chat).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'user', text: 'Please review this course' }),
+      ]),
+    );
+
+    act(() => FakeEventSource.instances[0]!.emit('caught_up', { type: 'caught_up' }));
+    expect(useWorkbenchStore.getState().replaying).toBe(false);
+    expect(useWorkbenchStore.getState().error).toBe('Too Many Requests');
   });
 
   it('reconciles a terminal status when the event stream stays silent', async () => {

@@ -1,12 +1,8 @@
 // @vitest-environment jsdom
 /**
- * The stream hook's caught-up state machine, driven at the wire level (#2283):
- * a real `FetchEventSource` against a fetch the test scripts frame by frame.
- * The question is what the fold holds, and when — before `caught_up` every
- * frame (live-labelled or not) waits in the client's backlog; a reconnect
- * replays the gap as backlog-labelled frames the client applies at once
- * (that is the design: they are history the user never saw arrive); the
- * watchdog flushes a stream that went silent mid-replay.
+ * The stream hook's caught-up state machine. Before `caught_up` every frame
+ * waits in the client backlog; a silent replay applies its received prefix and
+ * reconnects from that applied cursor without pretending the history is done.
  */
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -21,45 +17,63 @@ import {
 import { useQuestionAutoConfirm } from '@/lib/workbench/question-auto-confirm';
 import { sessionScopedKey } from '@/lib/workbench/request-scope';
 
-interface Wire {
-  /** The fetch the connection was opened with: its headers carry `last-event-id` on a reconnect. */
-  readonly headers: Record<string, string>;
-  readonly send: (text: string) => void;
-  readonly drop: () => void;
-}
+class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
+  static instances: FakeEventSource[] = [];
 
-let wires: Wire[];
-let fetchMock: ReturnType<typeof vi.fn>;
-
-/** Each fetch for the events route answers with a stream the test writes to. */
-function answerEventsWithStreams() {
-  fetchMock.mockImplementation(async (url: string | unknown, init?: RequestInit) => {
-    const target = String(url ?? '');
-    if (!target.includes('/events')) {
-      // The attachment's meta read: nothing to add.
-      return new Response('{}', { status: 404 });
-    }
-    let dropped = false;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        wires.push({
-          headers: (init?.headers ?? {}) as Record<string, string>,
-          send: (text) => controller.enqueue(new TextEncoder().encode(text)),
-          drop: () => {
-            if (dropped) return;
-            dropped = true;
-            controller.error(new Error('dropped'));
-          },
-        });
-      },
-    });
-    return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  readyState = FakeEventSource.CONNECTING;
+  onerror: ((event: Event) => void) | null = null;
+  readonly reconnect = vi.fn((_lastEventId?: string) => {
+    this.readyState = FakeEventSource.CONNECTING;
   });
-}
+  private readonly listeners = new Map<string, Set<(event: Event) => void>>();
 
-const sse = (event: WorkbenchEvent & { phase?: string }) =>
-  `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-const CAUGHT_UP = `event: caught_up\ndata: ${JSON.stringify({ type: 'caught_up' })}\n\n`;
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: Event) => void): void {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type: string, listener: (event: Event) => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  send(event: WorkbenchEvent & { phase?: string }): void {
+    this.emit(
+      event.type,
+      new MessageEvent(event.type, {
+        data: JSON.stringify(event),
+        lastEventId: String(event.id),
+        origin: 'https://app.example',
+      }),
+    );
+  }
+
+  caughtUp(): void {
+    this.emit('caught_up', new MessageEvent('caught_up', { data: '{"type":"caught_up"}' }));
+  }
+
+  drop(): void {
+    this.readyState = FakeEventSource.CONNECTING;
+    const event = new Event('error');
+    this.emit('error', event);
+    this.onerror?.(event);
+  }
+
+  private emit(type: string, event: Event): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+
+  close(): void {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
 
 const event = (
   id: number,
@@ -76,18 +90,22 @@ const QUESTION = (phase: 'live' | 'backlog') =>
 
 let root: Root;
 let container: HTMLDivElement;
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('location', { href: 'https://app.example/page' });
-  wires = [];
-  fetchMock = vi.fn();
-  vi.stubGlobal('fetch', fetchMock);
-  answerEventsWithStreams();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response('{}', { status: 404 })),
+  );
+  FakeEventSource.instances = [];
+  vi.stubGlobal('EventSource', FakeEventSource);
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
 });
+
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
@@ -123,15 +141,14 @@ const foldHasQuestion = () =>
   useWorkbenchStore.getState().chat.some((node) => node.kind === 'question');
 const questionLiveMarked = (sessionId: string) =>
   useQuestionAutoConfirm.getState().live.includes(sessionScopedKey(sessionId, 'e4'));
+const source = () => FakeEventSource.instances.at(-1)!;
 
 describe('a question on the live tail', () => {
   it('folds the moment the frame arrives, and is marked live for auto-confirm', async () => {
     await attachStream('s1');
-    wires[0]!.send(CAUGHT_UP);
-    await act(async () => vi.advanceTimersByTimeAsync(0));
-    wires[0]!.send(sse(RUN_START('live')));
-    wires[0]!.send(sse(QUESTION('live')));
-    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () => source().caughtUp());
+    await act(async () => source().send(RUN_START('live')));
+    await act(async () => source().send(QUESTION('live')));
     expect(foldHasQuestion()).toBe(true);
     expect(questionLiveMarked('s1')).toBe(true);
     expect(useWorkbenchStore.getState().replaying).toBe(false);
@@ -139,57 +156,49 @@ describe('a question on the live tail', () => {
 });
 
 describe('a question that lands before caught_up', () => {
-  it('waits in the client backlog — even a live-labelled frame — until the watchdog flushes', async () => {
+  it('waits in the client backlog until the silent replay flushes its prefix', async () => {
     await attachStream('s1');
-    // The server has drained (it labels live) but the `caught_up` event is
-    // still in flight: the client buffers, and the stream then goes quiet.
-    wires[0]!.send(sse(RUN_START('live')));
-    wires[0]!.send(sse(QUESTION('live')));
-    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () => {
+      source().send(RUN_START('live'));
+      source().send(QUESTION('live'));
+    });
     expect(foldHasQuestion()).toBe(false);
-    // REPLAY_WATCHDOG_MS of silence ends the wait.
-    await act(async () => vi.advanceTimersByTimeAsync(20_000));
+    await act(async () => vi.advanceTimersByTimeAsync(55_000));
     expect(foldHasQuestion()).toBe(true);
+    expect(source().reconnect).toHaveBeenCalledWith('4');
+    expect(useWorkbenchStore.getState().replaying).toBe(true);
   });
 });
 
 describe('a question replayed over a reconnect', () => {
-  it('applies at once (the client was caught up), and is history, not live', async () => {
+  it('applies at once and is history, not live', async () => {
     await attachStream('s1');
-    wires[0]!.send(CAUGHT_UP);
-    await act(async () => vi.advanceTimersByTimeAsync(0));
-    wires[0]!.send(sse(RUN_START('live')));
-    await act(async () => vi.advanceTimersByTimeAsync(0));
-    // The connection drops; EventSource reconnects with the last event id
-    // (its default retry is 3 s).
-    wires[0]!.drop();
+    await act(async () => source().caughtUp());
+    await act(async () => source().send(RUN_START('live')));
+    await act(async () => source().drop());
     await act(async () => vi.advanceTimersByTimeAsync(4_000));
-    expect(wires.length).toBe(2);
-    expect(wires[1]!.headers['last-event-id']).toBe('1');
-    // The gap replays as backlog-labelled frames; the client applies them
-    // directly — its catch-up state survived the reconnect.
-    wires[1]!.send(sse(QUESTION('backlog')));
-    wires[1]!.send(CAUGHT_UP);
-    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () => source().reconnect('1'));
+    await act(async () => {
+      source().send(QUESTION('backlog'));
+      source().caughtUp();
+    });
     expect(foldHasQuestion()).toBe(true);
     expect(questionLiveMarked('s1')).toBe(false);
   });
 });
 
 describe('a watchdog that fired mid-replay', () => {
-  it('lets the frames still labelled backlog apply live afterwards', async () => {
+  it('keeps replaying and treats later backlog as history', async () => {
     await attachStream('s1');
-    // A frame, then silence: the watchdog flushes the one-frame backlog.
-    wires[0]!.send(sse(RUN_START('backlog')));
-    await act(async () => vi.advanceTimersByTimeAsync(0));
-    await act(async () => vi.advanceTimersByTimeAsync(20_000));
-    expect(useWorkbenchStore.getState().replaying).toBe(false);
-    // The server is still draining: the frames it sends now carry the
-    // backlog label, but this client is caught up and folds them at once.
-    wires[0]!.send(sse(QUESTION('backlog')));
-    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () => source().send(RUN_START('backlog')));
+    await act(async () => vi.advanceTimersByTimeAsync(55_000));
+    expect(source().reconnect).toHaveBeenCalledWith('1');
+    expect(useWorkbenchStore.getState().replaying).toBe(true);
+
+    await act(async () => source().send(QUESTION('backlog')));
+    expect(foldHasQuestion()).toBe(false);
+    await act(async () => source().caughtUp());
     expect(foldHasQuestion()).toBe(true);
-    // The server's word decides auto-confirm: backlog-labelled is history.
     expect(questionLiveMarked('s1')).toBe(false);
   });
 });

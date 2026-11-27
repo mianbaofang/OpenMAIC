@@ -552,6 +552,7 @@ export interface WorkbenchState extends WorkbenchSessionState {
     title?: string | null;
     expectedTitleRevision?: number;
     status?: SessionStatus;
+    error?: string | null;
     stageId?: string | null;
     existingCourse?: boolean;
   }) => void;
@@ -1857,6 +1858,7 @@ export function foldEvent(state: WorkbenchFold, event: WorkbenchEvent): Workbenc
         // Scope the search to the current run so an earlier failed answer does
         // not hide a later follow-up's failure.
         const cause = data.error ? String(data.error).trim() : '';
+        next.error = cause || null;
         const runStart = next.chat.findLastIndex(
           (node) => node.kind === 'user' || node.kind === 'boundary',
         );
@@ -2165,6 +2167,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
         ? { sessionTitle: input.title }
         : {}),
       ...(input.status && state.lastEventId === 0 ? { status: input.status } : {}),
+      ...(input.error !== undefined ? { error: input.error } : {}),
       // Only ever FILLS the stage, never overwrites: the attach path knows it
       // first-hand when it has it, and a late meta response for a session the
       // user has already switched away from must not repoint the course sync.

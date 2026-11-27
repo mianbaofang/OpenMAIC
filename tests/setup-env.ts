@@ -65,3 +65,16 @@ vi.mock('@/lib/utils/fetch-event-source', async (importOriginal) => {
     }),
   };
 });
+
+vi.mock('@/lib/utils/native-event-source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/utils/native-event-source')>();
+  return {
+    ...actual,
+    NativeEventSource: new Proxy(actual.NativeEventSource, {
+      construct(target, args: [string], newTarget) {
+        const stub = (globalThis as { EventSource?: new (url: string) => object }).EventSource;
+        return stub ? new stub(...args) : Reflect.construct(target, args, newTarget);
+      },
+    }),
+  };
+});
