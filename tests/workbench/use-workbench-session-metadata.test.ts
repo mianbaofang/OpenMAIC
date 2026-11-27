@@ -65,6 +65,7 @@ describe('session detail bootstrap attachment lifetime', () => {
     useWorkbenchStore.getState().detach();
     container.remove();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('ignores an old A detail response after navigating A to B to A', async () => {
@@ -195,4 +196,160 @@ describe('session detail bootstrap attachment lifetime', () => {
       });
     },
   );
+
+  it('re-arms status polling for a follow-up run in the same attached session', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'running',
+          stageId: 'stage-a',
+          updatedAt: 100,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'failed',
+          updatedAt: 101,
+          error: 'first run failed',
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'failed',
+          updatedAt: 202,
+          error: 'second run failed',
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
+    expect(useWorkbenchStore.getState().status).toBe('failed');
+
+    act(() =>
+      useWorkbenchStore.getState().applyEvent({
+        id: 1,
+        ts: 102,
+        attempt: 2,
+        type: 'session_resumed',
+        data: { reason: 'follow_up' },
+      }),
+    );
+    expect(useWorkbenchStore.getState().status).toBe('running');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(useWorkbenchStore.getState().status).toBe('failed');
+    expect(
+      useWorkbenchStore
+        .getState()
+        .chat.some((node) => node.kind === 'system' && node.detail === 'second run failed'),
+    ).toBe(true);
+  });
+
+  it('ignores a terminal REST response that arrives after a newer run resumes', async () => {
+    vi.useFakeTimers();
+    const terminal = deferred<Response>();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'running',
+          stageId: 'stage-a',
+          updatedAt: 100,
+        }),
+      )
+      .mockReturnValueOnce(terminal.promise);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    act(() =>
+      useWorkbenchStore.getState().applyEvent({
+        id: 1,
+        ts: 102,
+        attempt: 2,
+        type: 'session_resumed',
+        data: { reason: 'follow_up' },
+      }),
+    );
+    await act(async () => {
+      terminal.resolve(
+        jsonResponse({
+          status: 'failed',
+          updatedAt: 101,
+          error: 'stale terminal status',
+        }),
+      );
+      await terminal.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(useWorkbenchStore.getState().status).toBe('running');
+    expect(
+      useWorkbenchStore
+        .getState()
+        .chat.some((node) => node.kind === 'system' && node.detail === 'stale terminal status'),
+    ).toBe(false);
+  });
+
+  it('reconciles a terminal status when the event stream stays silent', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'running',
+          stageId: 'stage-a',
+          updatedAt: 100,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          prompt: 'Current prompt',
+          title: 'Current title',
+          status: 'failed',
+          stageId: 'stage-a',
+          updatedAt: 101,
+          error: 'model output hit the max token limit and was truncated; this run did not finish',
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => root.render(createElement(Harness, { sessionId: 'session-a' })));
+    expect(useWorkbenchStore.getState().status).toBe('running');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
+
+    expect(useWorkbenchStore.getState().status).toBe('failed');
+    expect(
+      useWorkbenchStore
+        .getState()
+        .chat.some(
+          (node) =>
+            node.kind === 'system' &&
+            node.tone === 'error' &&
+            node.detail?.includes('max token limit'),
+        ),
+    ).toBe(true);
+  });
 });

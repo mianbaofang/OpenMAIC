@@ -123,6 +123,8 @@ export const WORKBENCH_EVENT_TYPES: readonly string[] = [
 const REPLAY_WATCHDOG_MS = 20_000;
 /** How long the transcript may wait for a stream that has not opened at all. */
 const REPLAY_BACKSTOP_MS = 120_000;
+/** REST backstop while the attached run is live but its SSE frames stop arriving. */
+const SESSION_STATUS_POLL_MS = 8_000;
 
 /**
  * Attach to a session's durable event stream.
@@ -139,6 +141,7 @@ export function useWorkbenchStream(sessionId: string | null): void {
   const setAttached = useWorkbenchStore((s) => s.setAttached);
   const finishReplayState = useWorkbenchStore((s) => s.finishReplay);
   const setError = useWorkbenchStore((s) => s.setError);
+  const reconcileSessionStatus = useWorkbenchStore((s) => s.reconcileSessionStatus);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -335,14 +338,91 @@ export function useWorkbenchStream(sessionId: string | null): void {
       }
     };
 
+    // SSE is the latency path, not the only correctness path. A browser tab can
+    // be suspended or an intermediary can freeze an open stream without ever
+    // firing onerror; poll the cheap detail endpoint while the fold says the run
+    // is live so a missed session_end cannot leave "排队中" on screen forever.
+    let statusPollTimer: number | undefined;
+    let statusPollInFlight = false;
+    const scheduleStatusPoll = () => {
+      if (!isCurrent() || statusPollTimer !== undefined) return;
+      statusPollTimer = window.setTimeout(() => {
+        statusPollTimer = undefined;
+        void pollSessionStatus();
+      }, SESSION_STATUS_POLL_MS);
+    };
+    const pollSessionStatus = async () => {
+      if (!isCurrent() || statusPollInFlight) return;
+      const current = useWorkbenchStore.getState();
+      if (
+        current.status !== 'connecting' &&
+        current.status !== 'queued' &&
+        current.status !== 'running'
+      ) {
+        return;
+      }
+      statusPollInFlight = true;
+      const statusAtRequest = current.status;
+      const eventIdAtRequest = current.lastEventId;
+      try {
+        const response = await fetch(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, {
+          cache: 'no-store',
+        });
+        if (!isCurrent()) return;
+        if (!response.ok) return;
+        const meta = (await response.json()) as {
+          status?: unknown;
+          error?: unknown;
+          updatedAt?: unknown;
+        };
+        if (!isCurrent()) return;
+        // A reconnect or a follow-up may have advanced this session while the
+        // detail request was in flight. Never let that older terminal snapshot
+        // overwrite the newer live run.
+        const latest = useWorkbenchStore.getState();
+        if (latest.status !== statusAtRequest || latest.lastEventId !== eventIdAtRequest) return;
+        if (
+          meta.status === 'succeeded' ||
+          meta.status === 'failed' ||
+          meta.status === 'cancelled'
+        ) {
+          reconcileSessionStatus({
+            status: meta.status,
+            ...(typeof meta.error === 'string' ? { error: meta.error } : {}),
+            updatedAt: typeof meta.updatedAt === 'number' ? meta.updatedAt : Date.now(),
+          });
+          return;
+        }
+      } catch {
+        // The next tick retries; the event stream remains the primary path.
+      } finally {
+        statusPollInFlight = false;
+        scheduleStatusPoll();
+      }
+    };
+    // A terminal tick intentionally stops the timer. Continuous chat reuses the
+    // same attachment, so re-arm it whenever a later run becomes live again.
+    const unsubscribeStatusPoll = useWorkbenchStore.subscribe((state, previous) => {
+      if (
+        state.sessionId === sessionId &&
+        state.status !== previous.status &&
+        (state.status === 'connecting' || state.status === 'queued' || state.status === 'running')
+      ) {
+        scheduleStatusPoll();
+      }
+    });
+    scheduleStatusPoll();
+
     return () => {
       active = false;
+      unsubscribeStatusPoll();
       // Leaving (or switching away from) this session ends its attachment.
       useQuestionAutoConfirm.getState().forgetLiveSession(sessionId);
       caughtUp = true;
       backlog.length = 0;
       window.clearTimeout(replayWatchdog);
       window.clearTimeout(replayBackstop);
+      window.clearTimeout(statusPollTimer);
       source.removeEventListener('open', armReplayWatchdog);
       for (const type of WORKBENCH_EVENT_TYPES)
         source.removeEventListener(type, onAny as EventListener);
@@ -351,7 +431,15 @@ export function useWorkbenchStream(sessionId: string | null): void {
       useCourseTimeline.getState().endAgentRun(Date.now());
       if (useWorkbenchStore.getState().sessionId === sessionId) setAttached(false);
     };
-  }, [sessionId, applyEvent, applyEvents, setAttached, finishReplayState, setError]);
+  }, [
+    sessionId,
+    applyEvent,
+    applyEvents,
+    setAttached,
+    finishReplayState,
+    setError,
+    reconcileSessionStatus,
+  ]);
 }
 
 /**

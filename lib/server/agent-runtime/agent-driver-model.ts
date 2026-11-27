@@ -1,5 +1,5 @@
 import type { Api, Model } from '@earendil-works/pi-ai';
-import { getModelInfo } from '@/lib/ai/providers';
+import { getModelInfo, getProvider } from '@/lib/ai/providers';
 import type { ProviderId } from '@/lib/types/provider';
 
 import { slotLanguageModel } from '@/lib/server/model-config/llm';
@@ -47,10 +47,11 @@ export function buildPiDriverModel(
     contextWindow: routeContextWindow ?? connection.modelInfo?.contextWindow ?? 128_000,
     // Pi requires Model.maxTokens. For known models this is the real catalog
     // output window. For unknown models 8192 is only a deterministic internal
-    // compaction reservation; resolveAgentDriverModel deliberately exposes an
-    // independent undefined wireMaxOutputTokens when output capacity is unknown.
-    // Teaching reserves this space when preparing input too, but sends an
-    // output allowance only when the connector declares a real output window.
+    // compaction reservation; resolveAgentDriverModel exposes it on the wire
+    // only for Anthropic transports that otherwise impose a hidden 4096 cap.
+    // Teaching reserves this space when preparing input too, and sends an
+    // output allowance for known windows or Anthropic transports that require
+    // an explicit max_tokens value.
     maxTokens: connection.modelInfo?.outputWindow ?? UNKNOWN_MODEL_RESERVED_OUTPUT_TOKENS,
   } as Model<Api>;
 }
@@ -63,9 +64,9 @@ export function buildPiDriverModel(
 export async function resolveAgentDriverModel(workspaceId: string | null = null): Promise<{
   connection: ResolvedModel;
   piModel: Model<Api>;
-  /** Catalog limit clamped to the context window; undefined omits max_tokens on the wire. */
+  /** Shared primary/fallback wire limit; unknown Anthropic targets use the conservative reservation. */
   wireMaxOutputTokens?: number;
-  /** Internal compaction output-space estimate; never used as a conversation API limit. */
+  /** Internal compaction estimate; also the wire limit for unknown Anthropic transports. */
   reservedOutputTokens: number;
   /** Teaching prepares one request that either configured slot target can serve. */
   teaching: { piModel: Model<Api>; wireMaxOutputTokens?: number };
@@ -111,8 +112,18 @@ export async function resolveAgentDriverModel(workspaceId: string | null = null)
   }
   const needsOutputFallback = requestedOutput >= piModel.contextWindow;
   const reservedOutputTokens = needsOutputFallback ? outputCeiling : requestedOutput;
-  const wireMaxOutputTokens =
-    connection.modelInfo?.outputWindow !== undefined || needsOutputFallback
+  // The Anthropic SDK requires max_tokens and otherwise inserts a hidden 4096
+  // default. For an unknown Anthropic model, send the same conservative
+  // reservation the runtime already uses for compaction instead of letting that
+  // SDK default truncate a valid tool-calling turn. Unknown OpenAI-compatible
+  // primaries omit the field unless an Anthropic fallback needs a shared limit.
+  const primaryProviderType = getProvider(connection.providerId as ProviderId)?.type;
+  const anthropicNeedsWireLimit =
+    connection.modelInfo?.outputWindow === undefined && primaryProviderType === 'anthropic';
+  const primaryWireOutputTokens =
+    connection.modelInfo?.outputWindow !== undefined ||
+    needsOutputFallback ||
+    anthropicNeedsWireLimit
       ? reservedOutputTokens
       : undefined;
   piModel.maxTokens = reservedOutputTokens;
@@ -129,11 +140,47 @@ export async function resolveAgentDriverModel(workspaceId: string | null = null)
   // not describe. A fallback on an endpoint that distrusts the catalogue is
   // never looked up there, so its declaration also wins a name collision.
   const fallbackContextWindow = fallbackInfo?.contextWindow ?? fallback?.declaredContextWindow;
-  const primaryOutput = capacity(wireMaxOutputTokens);
+  const primaryOutput = capacity(primaryWireOutputTokens);
   const fallbackOutput = capacity(fallbackInfo?.outputWindow);
-  // Do not copy a primary-only allowance/window to a smaller fallback. Unknown
-  // metadata keeps max_tokens omitted, just as for an unknown primary. The
-  // existing 128K/8192 estimates remain input-planning estimates only.
+  const fallbackProviderType = fallback
+    ? getProvider(fallback.registryId as ProviderId)?.type
+    : undefined;
+  const fallbackNeedsAnthropicWireLimit = fallbackProviderType === 'anthropic';
+  // Ordinary runs share one requested limit across primary and retry too. An
+  // Anthropic fallback must receive an explicit value even when the unknown
+  // primary would otherwise omit it; use the more conservative confirmed cap.
+  const wireMaxOutputTokens = fallbackNeedsAnthropicWireLimit
+    ? Math.min(
+        primaryWireOutputTokens ?? fallbackOutput ?? UNKNOWN_MODEL_RESERVED_OUTPUT_TOKENS,
+        fallbackOutput ?? UNKNOWN_MODEL_RESERVED_OUTPUT_TOKENS,
+      )
+    : primaryWireOutputTokens;
+  // Teaching uses one stream budget for either retry target. If either side is
+  // Anthropic, an explicit shared limit is mandatory: omitting it lets that
+  // side's SDK silently fall back to 4096. Unknown non-Anthropic targets still
+  // omit the field when neither side needs that transport safeguard.
+  const primarySharedOutput =
+    primaryOutput ??
+    (primaryProviderType === 'anthropic' ? UNKNOWN_MODEL_RESERVED_OUTPUT_TOKENS : undefined);
+  const fallbackSharedOutput =
+    fallbackOutput ??
+    (fallbackProviderType === 'anthropic' ? UNKNOWN_MODEL_RESERVED_OUTPUT_TOKENS : undefined);
+  const sharedOutputs = [primarySharedOutput, fallbackSharedOutput].filter(
+    (value): value is number => value !== undefined,
+  );
+  const teachingWireOutputTokens = !fallback
+    ? primaryOutput
+    : primaryProviderType === 'anthropic' || fallbackProviderType === 'anthropic'
+      ? sharedOutputs.length > 0
+        ? Math.min(...sharedOutputs)
+        : undefined
+      : primaryOutput !== undefined && fallbackOutput !== undefined
+        ? Math.min(primaryOutput, fallbackOutput)
+        : undefined;
+  // Do not copy a primary-only allowance/window to a smaller fallback. The
+  // shared budgets above are the exception required by an Anthropic transport's
+  // mandatory max_tokens field; known non-Anthropic targets keep their own
+  // confirmed output windows.
   const teaching = {
     piModel: fallback
       ? {
@@ -148,11 +195,7 @@ export async function resolveAgentDriverModel(workspaceId: string | null = null)
           ),
         }
       : piModel,
-    wireMaxOutputTokens: fallback
-      ? primaryOutput && fallbackOutput
-        ? Math.min(primaryOutput, fallbackOutput)
-        : undefined
-      : primaryOutput,
+    wireMaxOutputTokens: teachingWireOutputTokens,
   };
   return {
     connection,

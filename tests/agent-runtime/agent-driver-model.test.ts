@@ -55,6 +55,7 @@ async function drain(stream: AsyncIterable<unknown>): Promise<void> {
 const providers = {
   openai: { preset: 'openai', apiKey: 'sk', models: ['gpt-5.6-luna'] },
   ac: { preset: 'atlascloud', apiKey: 'sk' },
+  minimax: { preset: 'minimax', apiKey: 'sk' },
 };
 
 async function configure(
@@ -198,6 +199,15 @@ describe('agent driver model', () => {
     expect(resolved.reservedOutputTokens).toBe(8_192);
   });
 
+  it('sends the conservative reservation for an unknown Anthropic model', async () => {
+    mocks.modelInfo = null;
+    const resolved = await (await configure('minimax:MiniMax-M3.1-Flash'))();
+    expect(resolved.piModel.provider).toBe('minimax');
+    expect(resolved.reservedOutputTokens).toBe(8_192);
+    // Omitting max_tokens makes the Anthropic SDK silently use 4096.
+    expect(resolved.wireMaxOutputTokens).toBe(8_192);
+  });
+
   it('omits the unknown-model output limit even when compaction supplies its reservation', async () => {
     mocks.streamLLM.mockReturnValue(finishedStream());
     const { createCallLlmStreamFn } = await import('@/lib/agent/runtime/stream-fn');
@@ -306,6 +316,93 @@ describe('agent driver model', () => {
       } finally {
         spy.mockRestore();
       }
+    },
+  );
+
+  it('shares the conservative reservation with an unknown Anthropic fallback', async () => {
+    const resolved = await (
+      await configure({
+        model: 'openai:gpt-5.6-luna',
+        fallback: 'minimax:MiniMax-M3.1-Flash',
+      })
+    )();
+    expect(resolved.wireMaxOutputTokens).toBe(8_192);
+    expect(resolved.teaching.wireMaxOutputTokens).toBe(8_192);
+  });
+
+  it('keeps a known Anthropic primary wire limit when the fallback metadata is unknown', async () => {
+    const resolved = await (
+      await configure({
+        model: 'minimax:MiniMax-M3.1-Flash',
+        fallback: 'openai:some-model',
+      })
+    )();
+    expect(resolved.wireMaxOutputTokens).toBe(16_384);
+    expect(resolved.teaching.wireMaxOutputTokens).toBe(16_384);
+  });
+
+  it.each([
+    {
+      name: 'unknown OpenAI primary with an unknown Anthropic fallback',
+      model: 'openai:some-model',
+      fallback: 'minimax:MiniMax-M3.1-Flash',
+      expectedWireOutput: 8_192,
+    },
+    {
+      name: 'unknown Anthropic primary with an unknown OpenAI fallback',
+      model: 'minimax:MiniMax-M3.1-Flash',
+      fallback: 'openai:some-model',
+      expectedWireOutput: 8_192,
+    },
+  ])(
+    'shares an Anthropic-safe teaching budget for an $name',
+    async ({ model, fallback, expectedWireOutput }) => {
+      mocks.modelInfo = null;
+      const resolved = await (await configure({ model, fallback }))();
+      expect(resolved.wireMaxOutputTokens).toBe(expectedWireOutput);
+      expect(resolved.teaching.wireMaxOutputTokens).toBe(8_192);
+    },
+  );
+
+  it.each([
+    {
+      name: 'an unknown Anthropic fallback',
+      fallback: 'minimax:MiniMax-M3.1-Flash',
+      expectedOutput: 8_192,
+    },
+    {
+      name: 'a known Anthropic fallback',
+      fallback: 'minimax:MiniMax-M3',
+      expectedOutput: 32_768,
+    },
+  ])(
+    'does not omit max_tokens for an ordinary run with $name',
+    async ({ fallback, expectedOutput }) => {
+      mocks.modelInfo = null;
+      mocks.streamLLM.mockReturnValue(finishedStream());
+      const resolved = await (
+        await configure({
+          model: 'openai:some-model',
+          fallback,
+        })
+      )();
+      const { createCallLlmStreamFn } = await import('@/lib/agent/runtime/stream-fn');
+      const streamFn = createCallLlmStreamFn({
+        languageModel: {} as never,
+        maxOutputTokens: resolved.wireMaxOutputTokens,
+        omitMaxOutputTokens: resolved.wireMaxOutputTokens === undefined,
+      });
+
+      const stream = await streamFn({} as never, {
+        systemPrompt: 'system',
+        messages: [],
+        tools: [],
+      });
+      await drain(stream);
+
+      expect(resolved.wireMaxOutputTokens).toBe(expectedOutput);
+      expect(resolved.teaching.wireMaxOutputTokens).toBe(expectedOutput);
+      expect(mocks.streamLLM.mock.calls[0]?.[0]?.maxOutputTokens).toBe(expectedOutput);
     },
   );
 

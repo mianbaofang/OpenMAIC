@@ -1609,8 +1609,9 @@ async function executeSession(
           requestDriver.piModel,
         )
       : null;
-    // Only a confirmed provider output window may become a wire limit. Pi's
-    // unknown-model reservation is for input preparation, never a reply ceiling.
+    // A confirmed provider output window, or the conservative reservation for
+    // an unknown Anthropic model, may become a wire limit. Other unknown-model
+    // reservations remain input-planning estimates only.
     const confirmedOutputWindow =
       requestDriver.wireMaxOutputTokens !== undefined &&
       Number.isFinite(requestDriver.wireMaxOutputTokens) &&

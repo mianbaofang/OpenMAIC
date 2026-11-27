@@ -2508,7 +2508,7 @@
     "talkAboutCourseHint": "Ouvrir une nouvelle conversation sur ce cours",
     "reviewLayout": "Vérifier la mise en page avec l’IA",
     "reviewLayoutHint": "Laisser l’IA vérifier toute la mise en page du cours et préparer les corrections",
-    "reviewLayoutPrompt": "Please review and fix only layout and readability problems in this course. Keep all teaching content, wording, formulas, questions, page order, characters, and audio unchanged. Inspect every slide and interactive page for out-of-bounds elements, overlap, clipping, tiny text, inconsistent spacing, horizontal scrolling, and colliding controls. Read each page before editing, make the smallest necessary changes, then read it again to verify. Do not reorder pages, delete content, or regenerate audio. Finish with a page-by-page list of changes and any unresolved issues.",
+    "reviewLayoutPrompt": "Please review and fix only layout and readability problems in this course. Keep all teaching content, wording, formulas, questions, page order, characters, and audio unchanged. Work in short batches of 4–6 pages: read only that batch, apply its smallest fixes in one patch, then verify each changed page. Output only a one-line summary per batch; do not write long reports or long explanations. Never read the whole course at once, never dump full page source, and do not reorder pages, delete content, or regenerate audio. After all batches, output only a short count and any unresolved issues.",
     "collapseClassroom": "Collapse classroom",
     "expandClassroom": "Classroom",
     "readOnlyBadge": "Read-only",

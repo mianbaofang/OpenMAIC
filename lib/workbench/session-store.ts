@@ -16,7 +16,9 @@
  *    fold (`foldEvent`) is a pure function exported for tests; no event handler
  *    queries the session status endpoint. That is what makes `Last-Event-ID`
  *    resumption correct rather than approximately correct: reattaching at N and
- *    applying N+1… produces the same state as applying 1… from scratch.
+ *    applying N+1… produces the same state as applying 1… from scratch. A separate
+ *    REST poll only reconciles a missed terminal lifecycle status and never
+ *    fabricates an event id or transcript frame.
  *  - **It lives outside React.** Unmounting the chat tree tears down the
  *    EventSource; the folded state survives here, and reattaching resumes from
  *    `lastEventId` instead of replaying the whole run.
@@ -553,6 +555,12 @@ export interface WorkbenchState extends WorkbenchSessionState {
     stageId?: string | null;
     existingCourse?: boolean;
   }) => void;
+  /** Reconcile a terminal REST status when the event stream missed session_end. */
+  reconcileSessionStatus: (input: {
+    status: TerminalSessionStatus;
+    error?: string;
+    updatedAt: number;
+  }) => void;
 }
 
 /**
@@ -993,6 +1001,27 @@ function settleRunningToolCards(
       toolEndedAt: ts,
     };
   });
+}
+
+function failedRunNotice(key: string, cause: string): ChatNode {
+  const budgetCopyKey = contextBudgetCopyKey(cause);
+  const budgetHintCopyKey = budgetCopyKey
+    ? contextBudgetHintKey(cause)
+    : 'workbench.system.retryHint';
+  return {
+    key,
+    kind: 'system',
+    tone: 'error',
+    text: defaultWorkbenchTranslator(budgetCopyKey ?? 'workbench.system.runFailed'),
+    copyKey: budgetCopyKey ?? 'workbench.system.runFailed',
+    ...(budgetHintCopyKey
+      ? {
+          hint: defaultWorkbenchTranslator(budgetHintCopyKey),
+          hintCopyKey: budgetHintCopyKey,
+        }
+      : {}),
+    ...(cause ? { detail: cause } : {}),
+  };
 }
 
 /**
@@ -1817,38 +1846,32 @@ export function foldEvent(state: WorkbenchFold, event: WorkbenchEvent): Workbenc
         n.kind === 'assistant' && n.streaming ? { ...n, streaming: false } : n,
       );
       if (status === 'failed') {
-        // Three fields, not one sentence: what happened, what to do, and the
-        // raw cause (behind the notice's disclosure). The provider's own
-        // English error text used to be spliced into the middle of the
-        // sentence, which read as a log line and — because every auto-retry
-        // appends its own marker — stacked N identical copies of it.
+        // A status poll may already have surfaced this terminal fact while the
+        // event stream was disconnected. The durable frame remains authoritative,
+        // but it must not append the same failure twice when it finally arrives.
+        // Scope the search to the current run so an earlier failed answer does
+        // not hide a later follow-up's failure.
         const cause = data.error ? String(data.error).trim() : '';
-        // A context-budget block names its specific reason (summarization
-        // failed, the conversation does not fit, nothing left to cut) and
-        // points at the action that can actually help — retrying an oversized
-        // transcript would hit the same limit, and a misconfigured output
-        // budget is an operator fix, so that one deliberately has no hint.
-        const budgetCopyKey = contextBudgetCopyKey(cause);
-        const budgetHintCopyKey = budgetCopyKey
-          ? contextBudgetHintKey(cause)
-          : 'workbench.system.retryHint';
-        next.chat = [
-          ...settled,
-          {
-            key,
-            kind: 'system',
-            tone: 'error',
-            text: defaultWorkbenchTranslator(budgetCopyKey ?? 'workbench.system.runFailed'),
-            copyKey: budgetCopyKey ?? 'workbench.system.runFailed',
-            ...(budgetHintCopyKey
-              ? {
-                  hint: defaultWorkbenchTranslator(budgetHintCopyKey),
-                  hintCopyKey: budgetHintCopyKey,
-                }
-              : {}),
-            ...(cause ? { detail: cause } : {}),
-          },
-        ];
+        const runStart = next.chat.findLastIndex(
+          (node) => node.kind === 'user' || node.kind === 'boundary',
+        );
+        const reconciled = next.chat
+          .slice(runStart + 1)
+          .find(
+            (node) =>
+              node.kind === 'system' &&
+              node.tone === 'error' &&
+              node.key.startsWith('meta-status:'),
+          );
+        if (reconciled) {
+          next.chat = settled.map((node) =>
+            node.key === reconciled.key && cause && !node.detail
+              ? { ...node, ...failedRunNotice(node.key, cause) }
+              : node,
+          );
+        } else {
+          next.chat = [...settled, failedRunNotice(key, cause)];
+        }
         break;
       }
       if (status === 'cancelled') {
@@ -1925,6 +1948,43 @@ export function foldEvent(state: WorkbenchFold, event: WorkbenchEvent): Workbenc
 
 export function foldEvents(state: WorkbenchFold, events: readonly WorkbenchEvent[]): WorkbenchFold {
   return events.reduce(foldEvent, state);
+}
+
+export type TerminalSessionStatus = Extract<SessionStatus, 'succeeded' | 'failed' | 'cancelled'>;
+
+/**
+ * REST backstop for a live fold whose SSE connection stopped delivering frames.
+ * It changes only run lifecycle state, never lastEventId: the durable event can
+ * still arrive later and replay normally, with failedRunNotice de-duplication
+ * preventing a second copy of the same error.
+ */
+export function reconcileTerminalSessionStatus(
+  state: WorkbenchFold,
+  input: {
+    readonly status: TerminalSessionStatus;
+    readonly error?: string;
+    readonly updatedAt: number;
+  },
+): WorkbenchFold {
+  if (state.status !== 'connecting' && state.status !== 'queued' && state.status !== 'running') {
+    return state;
+  }
+  const next: WorkbenchFold = { ...state, status: input.status };
+  closeWaiting(next);
+  next.waitingArmed = false;
+  next.generationOpen = false;
+  next.thinkingKey = null;
+  next.assistantKey = null;
+  const settled = settleStreamingThinking(next.chat, input.updatedAt).map((node) =>
+    node.kind === 'assistant' && node.streaming ? { ...node, streaming: false } : node,
+  );
+  if (input.status === 'failed') {
+    const cause = input.error?.trim() ?? '';
+    next.chat = [...settled, failedRunNotice(`meta-status:${input.updatedAt}`, cause)];
+  } else {
+    next.chat = settled;
+  }
+  return next;
 }
 
 const REPLAY_STREAMING = new Set(['message_update', 'trace']);
@@ -2082,6 +2142,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
     if (events.length === 0) return;
     set((state) => foldEvents(state, events));
   },
+  reconcileSessionStatus: (input) => set((state) => reconcileTerminalSessionStatus(state, input)),
 }));
 
 // ── Control-plane client ─────────────────────────────────────────────────────
